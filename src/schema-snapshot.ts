@@ -1,7 +1,7 @@
 /**
  * Schema snapshot utilities for ZenStack schemas
  *
- * Uses ZenStack's AST to create a stable, diffable schema snapshot without Prisma.
+ * Uses ZenStack's AST to create a stable, diffable schema snapshot.
  */
 
 import { loadDocument } from "@zenstackhq/language";
@@ -13,56 +13,48 @@ import type {
   DataModelAttribute,
 } from "@zenstackhq/language/ast";
 
-export interface DmmfField {
+export interface SchemaColumn {
   name: string;
-  dbName?: string | null;
   type: string;
-  kind: "scalar" | "enum";
-  isList: boolean;
-  isRequired: boolean;
-  isUnique: boolean;
-  isId: boolean;
-  hasDefault: boolean;
+  notNull: boolean;
+  isArray: boolean;
   default?: string | number | boolean;
-  defaultKind?: string;
-  isRelation: boolean;
 }
 
-export interface DmmfConstraint {
+export interface SchemaConstraint {
   name: string;
   columns: string[];
 }
 
-export interface DmmfIndex {
+export interface SchemaIndex {
   name: string;
   columns: string[];
 }
 
-export interface DmmfForeignKey {
+export interface SchemaForeignKey {
   name: string;
   columns: string[];
   referencedTable: string;
   referencedColumns: string[];
 }
 
-export interface DmmfModel {
+export interface SchemaTable {
   name: string;
-  tableName: string;
-  fields: DmmfField[];
-  primaryKey?: DmmfConstraint;
-  uniqueConstraints: DmmfConstraint[];
-  indexes: DmmfIndex[];
-  foreignKeys: DmmfForeignKey[];
+  columns: SchemaColumn[];
+  primaryKey?: SchemaConstraint;
+  uniqueConstraints: SchemaConstraint[];
+  indexes: SchemaIndex[];
+  foreignKeys: SchemaForeignKey[];
 }
 
-export interface DmmfSchema {
-  models: DmmfModel[];
+export interface SchemaSnapshot {
+  tables: SchemaTable[];
 }
 
-export interface DmmfSnapshot {
-  version: 1;
+export interface SchemaSnapshotFile {
+  version: 2;
   createdAt: string;
-  schema: DmmfSchema;
+  schema: SchemaSnapshot;
 }
 
 function normalizeName(value: string): string {
@@ -110,7 +102,9 @@ function getAttributeArrayRefs(attr: AttributeNode | undefined, name: string): s
   return refs.length > 0 ? refs : undefined;
 }
 
-function getDefaultValue(field: DataField): { hasDefault: boolean; default?: string | number | boolean; defaultKind?: string } {
+function getDefaultValue(
+  field: DataField,
+): { hasDefault: boolean; default?: string | number | boolean } {
   const attr = getAttribute(field, "@default");
   if (!attr) {
     return { hasDefault: false };
@@ -135,10 +129,6 @@ function getDefaultValue(field: DataField): { hasDefault: boolean; default?: str
     return { hasDefault: true, default: expr.value };
   }
 
-  if (expr.$type === "InvocationExpr") {
-    return { hasDefault: true, defaultKind: expr.function.$refText };
-  }
-
   return { hasDefault: true };
 }
 
@@ -151,6 +141,22 @@ function getTableName(model: DataModel): string {
 function getColumnName(field: DataField): string {
   const mapAttr = getAttribute(field, "@map");
   return getAttributeStringArg(mapAttr, ["name", "map"]) ?? field.name;
+}
+
+function mapFieldTypeToSQL(fieldType: string): string {
+  const typeMap: Record<string, string> = {
+    String: "text",
+    Int: "integer",
+    Float: "double precision",
+    Boolean: "boolean",
+    DateTime: "timestamp",
+    BigInt: "bigint",
+    Decimal: "decimal",
+    Json: "json",
+    Bytes: "blob",
+  };
+
+  return typeMap[fieldType] ?? "text";
 }
 
 function buildPrimaryKeyName(tableName: string, explicitName?: string): string {
@@ -180,21 +186,23 @@ function buildForeignKeyName(
   )}_${normalizeName(referencedColumns.join("_"))}`;
 }
 
-function getFieldType(field: DataField): { type: string; kind: "scalar" | "enum"; isRelation: boolean } {
+function getFieldType(field: DataField): { type: string; isRelation: boolean } {
   const ref = field.type.reference?.ref;
 
   if (ref && isDataModel(ref)) {
-    return { type: ref.name, kind: "scalar", isRelation: true };
+    return { type: ref.name, isRelation: true };
   }
 
   if (ref && isEnum(ref)) {
-    return { type: ref.name, kind: "enum", isRelation: false };
+    return { type: ref.name, isRelation: false };
   }
 
-  return { type: field.type.type ?? "String", kind: "scalar", isRelation: false };
+  return { type: field.type.type ?? "String", isRelation: false };
 }
 
-function getRelationFieldNames(field: DataField): { fields: string[]; references: string[]; mapName?: string } | null {
+function getRelationFieldNames(
+  field: DataField,
+): { fields: string[]; references: string[]; mapName?: string } | null {
   const relationAttr = getAttribute(field, "@relation");
   if (!relationAttr) return null;
 
@@ -217,38 +225,30 @@ function buildFieldNameMap(model: DataModel): Map<string, string> {
   return map;
 }
 
-function parseModel(model: DataModel): DmmfModel {
+function parseModel(model: DataModel): SchemaTable {
   const tableName = getTableName(model);
-  const fields: DmmfField[] = [];
-  const fieldMap = new Map<string, DmmfField>();
+  const columns: SchemaColumn[] = [];
   const fieldNameMap = buildFieldNameMap(model);
 
   for (const field of model.fields) {
     if (!isDataField(field)) continue;
 
     const typeInfo = getFieldType(field);
+    if (typeInfo.isRelation) {
+      continue;
+    }
+
     const defaultInfo = getDefaultValue(field);
-    const isId = !!getAttribute(field, "@id");
-    const isUnique = !!getAttribute(field, "@unique");
     const columnName = getColumnName(field);
+    const sqlType = mapFieldTypeToSQL(typeInfo.type);
 
-    const dmmfField: DmmfField = {
-      name: field.name,
-      dbName: columnName !== field.name ? columnName : null,
-      type: typeInfo.type,
-      kind: typeInfo.kind,
-      isList: field.type.array ?? false,
-      isRequired: !field.type.optional,
-      isUnique,
-      isId,
-      hasDefault: defaultInfo.hasDefault,
+    columns.push({
+      name: columnName,
+      type: sqlType,
+      notNull: !field.type.optional,
+      isArray: field.type.array ?? false,
       default: defaultInfo.default,
-      defaultKind: defaultInfo.defaultKind,
-      isRelation: typeInfo.isRelation,
-    };
-
-    fields.push(dmmfField);
-    fieldMap.set(field.name, dmmfField);
+    });
   }
 
   const modelIdAttr = getAttribute(model, "@@id");
@@ -256,9 +256,10 @@ function parseModel(model: DataModel): DmmfModel {
   const modelIdName = getAttributeStringArg(modelIdAttr, ["name", "map"]);
 
   const primaryKeyColumns = modelIdFields?.map((name) => fieldNameMap.get(name) ?? name) ?? [];
-  const fieldIdColumns = fields
-    .filter((field) => field.isId && !field.isRelation)
-    .map((field) => field.dbName ?? field.name);
+  const fieldIdColumns = model.fields
+    .filter((field) => isDataField(field))
+    .filter((field) => !!getAttribute(field, "@id"))
+    .map((field) => getColumnName(field));
 
   const resolvedPrimaryKeyColumns = primaryKeyColumns.length > 0 ? primaryKeyColumns : fieldIdColumns;
   const primaryKey =
@@ -269,7 +270,7 @@ function parseModel(model: DataModel): DmmfModel {
         }
       : undefined;
 
-  const uniqueConstraints: DmmfConstraint[] = [];
+  const uniqueConstraints: SchemaConstraint[] = [];
   const uniqueAttrs = model.attributes.filter((attr) => attr.decl.$refText === "@@unique");
 
   for (const attr of uniqueAttrs) {
@@ -285,9 +286,11 @@ function parseModel(model: DataModel): DmmfModel {
     });
   }
 
-  for (const field of fields) {
-    if (!field.isUnique || field.isRelation) continue;
-    const columnName = field.dbName ?? field.name;
+  for (const field of model.fields) {
+    if (!isDataField(field)) continue;
+    if (!getAttribute(field, "@unique")) continue;
+
+    const columnName = getColumnName(field);
     const constraintName = buildUniqueName(tableName, [columnName]);
 
     if (!uniqueConstraints.some((constraint) => constraint.name === constraintName)) {
@@ -295,7 +298,7 @@ function parseModel(model: DataModel): DmmfModel {
     }
   }
 
-  const indexes: DmmfIndex[] = [];
+  const indexes: SchemaIndex[] = [];
   const indexAttrs = model.attributes.filter((attr) => attr.decl.$refText === "@@index");
 
   for (const attr of indexAttrs) {
@@ -311,7 +314,7 @@ function parseModel(model: DataModel): DmmfModel {
     });
   }
 
-  const foreignKeys: DmmfForeignKey[] = [];
+  const foreignKeys: SchemaForeignKey[] = [];
 
   for (const field of model.fields) {
     if (!isDataField(field)) continue;
@@ -342,14 +345,11 @@ function parseModel(model: DataModel): DmmfModel {
     });
   }
 
-  const sortedFields = fields
-    .filter((field) => !field.isRelation)
-    .sort((a, b) => a.name.localeCompare(b.name));
+  const sortedColumns = columns.sort((a, b) => a.name.localeCompare(b.name));
 
   return {
-    name: model.name,
-    tableName,
-    fields: sortedFields,
+    name: tableName,
+    columns: sortedColumns,
     primaryKey,
     uniqueConstraints: uniqueConstraints.sort((a, b) => a.name.localeCompare(b.name)),
     indexes: indexes.sort((a, b) => a.name.localeCompare(b.name)),
@@ -357,7 +357,7 @@ function parseModel(model: DataModel): DmmfModel {
   };
 }
 
-export async function generateDmmfSchema(schemaPath: string): Promise<DmmfSchema> {
+export async function generateSchemaSnapshot(schemaPath: string): Promise<SchemaSnapshot> {
   const loadResult = await loadDocument(schemaPath);
   if (!loadResult.success) {
     const messages = loadResult.errors.map((error) => String(error)).join("\n");
@@ -365,16 +365,16 @@ export async function generateDmmfSchema(schemaPath: string): Promise<DmmfSchema
   }
 
   const dataModels = loadResult.model.declarations.filter(isDataModel);
-  const models = dataModels
+  const tables = dataModels
     .map((model) => parseModel(model))
-    .sort((a, b) => a.tableName.localeCompare(b.tableName));
+    .sort((a, b) => a.name.localeCompare(b.name));
 
-  return { models };
+  return { tables };
 }
 
-export function createSnapshot(schema: DmmfSchema): DmmfSnapshot {
+export function createSnapshot(schema: SchemaSnapshot): SchemaSnapshotFile {
   return {
-    version: 1,
+    version: 2,
     createdAt: new Date().toISOString(),
     schema,
   };

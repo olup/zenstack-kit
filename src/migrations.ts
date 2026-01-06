@@ -9,12 +9,12 @@ import * as fs from "fs/promises";
 import * as path from "path";
 import {
   createSnapshot,
-  type DmmfSchema,
-  type DmmfModel,
-  type DmmfField,
-  type DmmfSnapshot,
-  generateDmmfSchema,
-} from "./dmmf.js";
+  type SchemaSnapshot,
+  type SchemaTable,
+  type SchemaColumn,
+  type SchemaSnapshotFile,
+  generateSchemaSnapshot,
+} from "./schema-snapshot.js";
 
 export interface MigrationOptions {
   /** Migration name */
@@ -43,11 +43,11 @@ export interface Migration {
 }
 
 interface FieldChange {
-  model: DmmfModel;
+  model: SchemaTable;
   tableName: string;
   columnName: string;
-  previous: DmmfField;
-  current: DmmfField;
+  previous: SchemaColumn;
+  current: SchemaColumn;
   changes: {
     typeChanged: boolean;
     requiredChanged: boolean;
@@ -57,10 +57,10 @@ interface FieldChange {
 }
 
 interface DiffResult {
-  addedModels: DmmfModel[];
-  removedModels: DmmfModel[];
-  addedFields: Array<{ model: DmmfModel; tableName: string; field: DmmfField; columnName: string }>;
-  removedFields: Array<{ model: DmmfModel; tableName: string; field: DmmfField; columnName: string }>;
+  addedModels: SchemaTable[];
+  removedModels: SchemaTable[];
+  addedFields: Array<{ model: SchemaTable; tableName: string; field: SchemaColumn; columnName: string }>;
+  removedFields: Array<{ model: SchemaTable; tableName: string; field: SchemaColumn; columnName: string }>;
   alteredFields: FieldChange[];
   renamedTables: Array<{ from: string; to: string }>;
   renamedColumns: Array<{ tableName: string; from: string; to: string }>;
@@ -103,12 +103,12 @@ function getSnapshotPaths(outputPath: string, snapshotPath?: string) {
   };
 }
 
-async function readSnapshot(snapshotPath: string): Promise<DmmfSnapshot | null> {
+async function readSnapshot(snapshotPath: string): Promise<SchemaSnapshotFile | null> {
   try {
     const content = await fs.readFile(snapshotPath, "utf-8");
-    const snapshot = JSON.parse(content) as DmmfSnapshot;
+    const snapshot = JSON.parse(content) as SchemaSnapshotFile;
 
-    if (!snapshot || snapshot.version !== 1 || !snapshot.schema) {
+    if (!snapshot || snapshot.version !== 2 || !snapshot.schema) {
       throw new Error("Snapshot format is invalid");
     }
 
@@ -122,40 +122,16 @@ async function readSnapshot(snapshotPath: string): Promise<DmmfSnapshot | null> 
   }
 }
 
-async function writeSnapshot(snapshotPath: string, schema: DmmfSchema): Promise<void> {
+async function writeSnapshot(snapshotPath: string, schema: SchemaSnapshot): Promise<void> {
   const snapshot = createSnapshot(schema);
   await fs.mkdir(path.dirname(snapshotPath), { recursive: true });
   await fs.writeFile(snapshotPath, JSON.stringify(snapshot, null, 2), "utf-8");
 }
 
-function getTableName(model: DmmfModel): string {
-  return model.tableName;
-}
-
-function getColumnName(field: DmmfField): string {
-  return field.dbName ?? field.name;
-}
-
-function mapFieldTypeToSQL(fieldType: string): string {
-  const typeMap: Record<string, string> = {
-    String: "text",
-    Int: "integer",
-    Float: "double precision",
-    Boolean: "boolean",
-    DateTime: "timestamp",
-    BigInt: "bigint",
-    Decimal: "decimal",
-    Json: "json",
-    Bytes: "blob",
-  };
-
-  return typeMap[fieldType] ?? "text";
-}
-
-function buildColumnBuilder(field: DmmfField): string | null {
+function buildColumnBuilder(field: SchemaColumn): string | null {
   const parts: string[] = [];
 
-  if (field.isRequired) {
+  if (field.notNull) {
     parts.push("notNull()");
   }
 
@@ -177,11 +153,11 @@ function formatLiteral(value: string | number | boolean): string {
   return String(value);
 }
 
-function buildCreateTable(model: DmmfModel): string {
-  const tableName = getTableName(model);
-  const columns = model.fields.map((field) => {
-    const columnName = getColumnName(field);
-    const columnType = mapFieldTypeToSQL(field.type);
+function buildCreateTable(model: SchemaTable): string {
+  const tableName = model.name;
+  const columns = model.columns.map((field) => {
+    const columnName = field.name;
+    const columnType = field.type;
     const builder = buildColumnBuilder(field);
 
     if (builder) {
@@ -227,15 +203,15 @@ function buildCreateTable(model: DmmfModel): string {
   return statements.join("\n\n");
 }
 
-function buildDropTable(model: DmmfModel): string {
-  const tableName = getTableName(model);
+function buildDropTable(model: SchemaTable): string {
+  const tableName = model.name;
   return `await db.schema.dropTable('${tableName}').ifExists().execute();`;
 }
 
-function buildAddColumn(model: DmmfModel, field: DmmfField): string {
-  const tableName = getTableName(model);
-  const columnName = getColumnName(field);
-  const columnType = mapFieldTypeToSQL(field.type);
+function buildAddColumn(model: SchemaTable, field: SchemaColumn): string {
+  const tableName = model.name;
+  const columnName = field.name;
+  const columnType = field.type;
   const builder = buildColumnBuilder(field);
 
   if (builder) {
@@ -253,9 +229,9 @@ function buildAddColumn(model: DmmfModel, field: DmmfField): string {
   ].join("\n");
 }
 
-function buildDropColumn(model: DmmfModel, field: DmmfField): string {
-  const tableName = getTableName(model);
-  const columnName = getColumnName(field);
+function buildDropColumn(model: SchemaTable, field: SchemaColumn): string {
+  const tableName = model.name;
+  const columnName = field.name;
   return `await db.schema.alterTable('${tableName}').dropColumn('${columnName}').execute();`;
 }
 
@@ -315,8 +291,8 @@ function buildAlterColumnChanges(change: FieldChange): { up: string[]; down: str
   const columnName = change.columnName;
 
   if (change.changes.typeChanged || change.changes.listChanged) {
-    const upType = mapFieldTypeToSQL(change.current.type);
-    const downType = mapFieldTypeToSQL(change.previous.type);
+    const upType = change.current.type;
+    const downType = change.previous.type;
 
     upStatements.push(
       `await db.schema.alterTable('${tableName}').alterColumn('${columnName}', (ac) => ac.setDataType('${upType}')).execute();`,
@@ -327,7 +303,7 @@ function buildAlterColumnChanges(change: FieldChange): { up: string[]; down: str
   }
 
   if (change.changes.requiredChanged) {
-    if (change.current.isRequired) {
+    if (change.current.notNull) {
       upStatements.push(
         `await db.schema.alterTable('${tableName}').alterColumn('${columnName}', (ac) => ac.setNotNull()).execute();`,
       );
@@ -369,15 +345,15 @@ function buildAlterColumnChanges(change: FieldChange): { up: string[]; down: str
   return { up: upStatements, down: downStatements };
 }
 
-function diffSchemas(previous: DmmfSchema | null, current: DmmfSchema): DiffResult {
-  const previousModels = new Map<string, DmmfModel>();
-  const currentModels = new Map<string, DmmfModel>();
+function diffSchemas(previous: SchemaSnapshot | null, current: SchemaSnapshot): DiffResult {
+  const previousModels = new Map<string, SchemaTable>();
+  const currentModels = new Map<string, SchemaTable>();
 
-  previous?.models.forEach((model) => previousModels.set(getTableName(model), model));
-  current.models.forEach((model) => currentModels.set(getTableName(model), model));
+  previous?.tables.forEach((model) => previousModels.set(model.name, model));
+  current.tables.forEach((model) => currentModels.set(model.name, model));
 
-  const addedModels: DmmfModel[] = [];
-  const removedModels: DmmfModel[] = [];
+  const addedModels: SchemaTable[] = [];
+  const removedModels: SchemaTable[] = [];
   const addedFields: DiffResult["addedFields"] = [];
   const removedFields: DiffResult["removedFields"] = [];
   const alteredFields: DiffResult["alteredFields"] = [];
@@ -441,8 +417,8 @@ function diffSchemas(previous: DmmfSchema | null, current: DmmfSchema): DiffResu
 }
 
 function diffModelChanges(
-  previousModel: DmmfModel,
-  currentModel: DmmfModel,
+  previousModel: SchemaTable,
+  currentModel: SchemaTable,
   tableName: string,
 ): Omit<DiffResult, "addedModels" | "removedModels" | "renamedTables" | "renamedColumns"> {
   const addedFields: DiffResult["addedFields"] = [];
@@ -456,11 +432,11 @@ function diffModelChanges(
   const removedForeignKeys: DiffResult["removedForeignKeys"] = [];
   const primaryKeyChanges: DiffResult["primaryKeyChanges"] = [];
 
-  const previousFields = new Map<string, DmmfField>();
-  const currentFields = new Map<string, DmmfField>();
+  const previousFields = new Map<string, SchemaColumn>();
+  const currentFields = new Map<string, SchemaColumn>();
 
-  previousModel.fields.forEach((field) => previousFields.set(getColumnName(field), field));
-  currentModel.fields.forEach((field) => currentFields.set(getColumnName(field), field));
+  previousModel.columns.forEach((field) => previousFields.set(field.name, field));
+  currentModel.columns.forEach((field) => currentFields.set(field.name, field));
 
   for (const [columnName, field] of currentFields.entries()) {
     if (!previousFields.has(columnName)) {
@@ -481,9 +457,9 @@ function diffModelChanges(
     }
 
     const typeChanged = previousField.type !== currentField.type;
-    const requiredChanged = previousField.isRequired !== currentField.isRequired;
+    const requiredChanged = previousField.notNull !== currentField.notNull;
     const defaultChanged = previousField.default !== currentField.default;
-    const listChanged = previousField.isList !== currentField.isList;
+    const listChanged = previousField.isArray !== currentField.isArray;
 
     if (typeChanged || requiredChanged || defaultChanged || listChanged) {
       alteredFields.push({
@@ -609,8 +585,8 @@ function applyRenameMappings(
   const renamedTableMap = new Map<string, string>();
 
   renameTables.forEach((mapping) => {
-    const fromIndex = removedModels.findIndex((model) => getTableName(model) === mapping.from);
-    const toIndex = addedModels.findIndex((model) => getTableName(model) === mapping.to);
+    const fromIndex = removedModels.findIndex((model) => model.name === mapping.from);
+    const toIndex = addedModels.findIndex((model) => model.name === mapping.to);
     if (fromIndex === -1 || toIndex === -1) {
       return;
     }
@@ -825,7 +801,7 @@ function indentLines(text: string, spaces: number): string {
 }
 
 export async function getSchemaDiff(options: MigrationOptions): Promise<DiffResult> {
-  const currentSchema = await generateDmmfSchema(options.schemaPath);
+  const currentSchema = await generateSchemaSnapshot(options.schemaPath);
   const { snapshotPath } = getSnapshotPaths(options.outputPath, options.snapshotPath);
   const previousSnapshot = await readSnapshot(snapshotPath);
   return applyRenameMappings(
@@ -864,7 +840,7 @@ export async function createMigration(options: MigrationOptions): Promise<Migrat
     throw new Error("Migration name is required");
   }
 
-  const currentSchema = await generateDmmfSchema(options.schemaPath);
+  const currentSchema = await generateSchemaSnapshot(options.schemaPath);
   const { snapshotPath } = getSnapshotPaths(options.outputPath, options.snapshotPath);
   const previousSnapshot = await readSnapshot(snapshotPath);
 

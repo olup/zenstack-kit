@@ -140,8 +140,8 @@ async function promptForMigrationName(defaultName: string): Promise<string> {
 }
 
 async function promptTableRenames(diff: Awaited<ReturnType<typeof getSchemaDiff>>) {
-  const removed = diff.removedModels.map((model) => model.tableName);
-  const added = diff.addedModels.map((model) => model.tableName);
+  const removed = diff.removedModels.map((model) => model.name);
+  const added = diff.addedModels.map((model) => model.name);
   const mappings: Array<{ from: string; to: string }> = [];
 
   let available = [...added];
@@ -213,7 +213,7 @@ async function promptColumnRenames(diff: Awaited<ReturnType<typeof getSchemaDiff
 }
 
 async function confirmDestructiveChanges(diff: Awaited<ReturnType<typeof getSchemaDiff>>) {
-  const removedTables = diff.removedModels.map((model) => model.tableName);
+  const removedTables = diff.removedModels.map((model) => model.name);
   const removedColumns = diff.removedFields.map((field) => `${field.tableName}.${field.columnName}`);
 
   if (removedTables.length === 0 && removedColumns.length === 0) {
