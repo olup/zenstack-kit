@@ -5,6 +5,7 @@ Drizzle-kit like CLI tooling for ZenStack schemas with Kysely support.
 ## Features
 
 - **Migration Generation** - Create Kysely migrations from ZenStack schema changes
+- **Database Introspection** - Generate ZenStack schemas from existing databases
 - **No Prisma Dependency** - Uses ZenStack AST directly for diffing
 - **Multi-Dialect Support** - SQLite, PostgreSQL, and MySQL
 - **Configuration File** - Type-safe configuration via `defineConfig()`
@@ -105,6 +106,28 @@ Options:
 - `--url <url>` - Database connection URL (defaults to config). For sqlite, pass a file path or `file:...` URL.
   - For non-sqlite dialects, a URL is required.
 
+### `zenstack-kit pull`
+
+Introspect an existing database and generate a ZenStack schema file.
+
+```bash
+zenstack-kit pull --dialect postgres --url postgres://... --output schema.zmodel
+```
+
+Options:
+- `-o, --output <path>` - Output path for schema (defaults to `./schema.zmodel`)
+- `--dialect <dialect>` - Database dialect (defaults to config or `sqlite`)
+- `--url <url>` - Database connection URL (defaults to config). For sqlite, pass a file path or `file:...` URL.
+
+Features:
+- Detects tables, columns, and types
+- Extracts primary keys (single and composite via `@@id`)
+- Extracts unique constraints (single `@unique` and composite `@@unique`)
+- Extracts foreign key relationships and generates `@relation` fields
+- Extracts indexes and generates `@@index`
+- Converts snake_case column names to camelCase with `@map` attributes
+- Generates `@@map` when table names differ from model names
+
 ## API Reference
 
 ### `introspectSchema(options)`
@@ -155,6 +178,23 @@ const { db, destroy } = await createKyselyAdapter({
 await destroy();
 ```
 
+### `pullSchema(options)`
+
+Introspect a database and generate a ZenStack schema.
+
+```ts
+import { pullSchema } from "zenstack-kit";
+
+const result = await pullSchema({
+  dialect: "postgres",
+  connectionUrl: process.env.DATABASE_URL,
+  outputPath: "./schema.zmodel",
+});
+
+console.log(result.outputPath); // "./schema.zmodel"
+console.log(result.tableCount); // 5
+```
+
 ### `defineConfig(config)`
 
 Define configuration with type safety.
@@ -178,7 +218,6 @@ export default defineConfig({
 
 ## Future Improvements
 
-- Database introspection using live connections
 - Dialect-specific column type mappings and defaults
 - Safer diffing for destructive changes (rename detection, column type narrowing warnings)
 - Migration status/rollback CLI helpers on top of Kysely migrator

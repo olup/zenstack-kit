@@ -13,6 +13,7 @@ import { createMigration, getSchemaDiff } from "./migrations.js";
 import { applyMigrations } from "./migrate-apply.js";
 import { loadConfig } from "./config-loader.js";
 import { getPromptProvider } from "./prompts.js";
+import { pullSchema } from "./pull.js";
 
 const program = new Command();
 
@@ -125,6 +126,43 @@ program
       });
     } catch (error) {
       console.error(chalk.red("Error applying migrations:"), error);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("pull")
+  .description("Introspect database and generate ZenStack schema")
+  .option("-o, --output <path>", "Output path for schema", "./schema.zmodel")
+  .option("--dialect <dialect>", "Database dialect (sqlite, postgres, mysql)")
+  .option("--url <url>", "Database connection URL")
+  .action(async (options) => {
+    console.log(chalk.blue("Pulling schema from database..."));
+    try {
+      const config = await loadConfig(process.cwd());
+      const dialect = (options.dialect ?? config?.dialect ?? "sqlite") as
+        | "sqlite"
+        | "postgres"
+        | "mysql";
+      const connectionUrl = options.url ?? config?.dbCredentials?.url;
+
+      if (dialect !== "sqlite" && !connectionUrl) {
+        throw new Error("Database connection URL is required for non-sqlite dialects");
+      }
+
+      const databasePath = dialect === "sqlite" ? resolveSqlitePath(connectionUrl) : undefined;
+
+      const result = await pullSchema({
+        dialect,
+        connectionUrl,
+        databasePath,
+        outputPath: options.output,
+      });
+
+      console.log(chalk.green(`✓ Schema generated: ${result.outputPath}`));
+      console.log(chalk.gray(`  ${result.tableCount} table(s) introspected`));
+    } catch (error) {
+      console.error(chalk.red("Error pulling schema:"), error);
       process.exit(1);
     }
   });

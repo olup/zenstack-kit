@@ -28,3 +28,6 @@ export {
   type KyselyAdapter,
   type KyselyDialect,
 } from "./kysely-adapter.js";
+
+// Database pull (introspection)
+export { pullSchema, type PullOptions, type PullResult } from "./pull.js";
