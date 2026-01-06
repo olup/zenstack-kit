@@ -1,0 +1,43 @@
+# Source files (we publish dist/)
+src/
+tests/
+
+# Test files
+*.test.ts
+vitest.config.ts
+
+# Config files
+tsconfig.json
+tsconfig.build.json
+
+# IDE
+.vscode/
+.idea/
+
+# Environment
+.env
+.env.*
+
+# Logs
+*.log
+
+# Coverage
+coverage/
+
+# Git
+.git/
+.gitignore
+
+# Dependencies (installed by user)
+node_modules/
+
+# Lock files
+pnpm-lock.yaml
+package-lock.json
+yarn.lock
+
+# GitHub
+.github/
+
+# Claude
+.claude/
