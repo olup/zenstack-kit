@@ -832,6 +832,38 @@ export async function hasSchemaChanges(options: MigrationOptions): Promise<boole
   );
 }
 
+export interface InitSnapshotOptions {
+  /** Path to ZenStack schema file */
+  schemaPath: string;
+  /** Output directory for migrations (snapshot will be in meta subfolder) */
+  outputPath: string;
+  /** Optional snapshot file override */
+  snapshotPath?: string;
+}
+
+export interface InitSnapshotResult {
+  /** Path to the created snapshot file */
+  snapshotPath: string;
+  /** Number of tables in the snapshot */
+  tableCount: number;
+}
+
+/**
+ * Initialize a snapshot from the current schema without generating a migration.
+ * Use this to baseline an existing database before starting to track migrations.
+ */
+export async function initSnapshot(options: InitSnapshotOptions): Promise<InitSnapshotResult> {
+  const currentSchema = await generateSchemaSnapshot(options.schemaPath);
+  const { snapshotPath } = getSnapshotPaths(options.outputPath, options.snapshotPath);
+
+  await writeSnapshot(snapshotPath, currentSchema);
+
+  return {
+    snapshotPath,
+    tableCount: currentSchema.tables.length,
+  };
+}
+
 /**
  * Create a migration file from schema changes
  */

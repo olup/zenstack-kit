@@ -13,8 +13,11 @@ export {
   createMigration,
   getSchemaDiff,
   hasSchemaChanges,
+  initSnapshot,
   type MigrationOptions,
   type Migration,
+  type InitSnapshotOptions,
+  type InitSnapshotResult,
 } from "./migrations.js";
 export { applyMigrations, type ApplyMigrationsOptions } from "./migrate-apply.js";
 export { setPromptProvider, type PromptProvider } from "./prompts.js";

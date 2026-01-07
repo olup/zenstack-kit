@@ -9,7 +9,7 @@
 
 import { Command } from "commander";
 import chalk from "chalk";
-import { createMigration, getSchemaDiff } from "./migrations.js";
+import { createMigration, getSchemaDiff, initSnapshot } from "./migrations.js";
 import { applyMigrations } from "./migrate-apply.js";
 import { loadConfig } from "./config-loader.js";
 import { getPromptProvider } from "./prompts.js";
@@ -126,6 +126,31 @@ program
       });
     } catch (error) {
       console.error(chalk.red("Error applying migrations:"), error);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("init")
+  .description("Initialize snapshot from existing schema (baseline for migrations)")
+  .option("-s, --schema <path>", "Path to ZenStack schema")
+  .option("-m, --migrations <path>", "Migrations directory")
+  .action(async (options) => {
+    console.log(chalk.blue("Initializing snapshot..."));
+    try {
+      const config = await loadConfig(process.cwd());
+      const schemaPath = options.schema ?? config?.schema ?? "./schema.zmodel";
+      const outputPath = options.migrations ?? config?.migrations?.migrationsFolder ?? "./migrations";
+
+      const result = await initSnapshot({
+        schemaPath,
+        outputPath,
+      });
+
+      console.log(chalk.green(`✓ Snapshot created: ${result.snapshotPath}`));
+      console.log(chalk.gray(`  ${result.tableCount} table(s) captured`));
+    } catch (error) {
+      console.error(chalk.red("Error initializing snapshot:"), error);
       process.exit(1);
     }
   });

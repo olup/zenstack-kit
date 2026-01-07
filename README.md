@@ -72,6 +72,18 @@ Configuration:
 - The CLI loads `zenstack-kit.config.ts|js|mjs|cjs` automatically when present.
 - CLI flags override config values.
 
+### `zenstack-kit init`
+
+Initialize a snapshot from an existing schema without generating a migration. Use this to baseline an existing database before starting to track migrations.
+
+```bash
+zenstack-kit init
+```
+
+Options:
+- `-s, --schema <path>` - Path to ZenStack schema (defaults to config or `./schema.zmodel`)
+- `-m, --migrations <path>` - Migrations directory (defaults to config or `./migrations`)
+
 ### `zenstack-kit migrate:generate`
 
 Generate a new migration file based on schema changes.
@@ -142,6 +154,22 @@ const schema = await introspectSchema({
 });
 
 console.log(schema.models); // [{ name: "User", fields: [...] }, ...]
+```
+
+### `initSnapshot(options)`
+
+Initialize a snapshot from the current schema without generating a migration.
+
+```ts
+import { initSnapshot } from "zenstack-kit";
+
+const result = await initSnapshot({
+  schemaPath: "./schema.zmodel",
+  outputPath: "./migrations",
+});
+
+console.log(result.snapshotPath); // "./migrations/meta/_snapshot.json"
+console.log(result.tableCount); // 5
 ```
 
 ### `createMigration(options)`
