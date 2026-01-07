@@ -4,16 +4,23 @@
  * zenstack-kit CLI - Database tooling for ZenStack schemas
  *
  * Commands:
- *   migrate   Create or apply database migrations
+ *   migrate:generate  Generate a new SQL migration
+ *   migrate:apply     Apply pending migrations
+ *   init              Initialize snapshot from existing schema
+ *   pull              Introspect database and generate schema
  */
 
 import { Command } from "commander";
 import chalk from "chalk";
-import { createMigration, getSchemaDiff, initSnapshot } from "./migrations.js";
-import { applyMigrations } from "./migrate-apply.js";
+import { initSnapshot } from "./migrations.js";
 import { loadConfig } from "./config-loader.js";
 import { getPromptProvider } from "./prompts.js";
 import { pullSchema } from "./pull.js";
+import {
+  createPrismaMigration,
+  applyPrismaMigrations,
+  hasPrismaSchemaChanges,
+} from "./prisma-migrations.js";
 
 const program = new Command();
 
@@ -24,55 +31,45 @@ program
 
 program
   .command("migrate:generate")
-  .description("Generate a new migration file")
+  .description("Generate a new SQL migration file")
   .option("-n, --name <name>", "Migration name")
   .option("-s, --schema <path>", "Path to ZenStack schema")
   .option("-m, --migrations <path>", "Migrations directory")
+  .option("--dialect <dialect>", "Database dialect (sqlite, postgres, mysql)")
   .action(async (options) => {
     console.log(chalk.blue("Generating migration..."));
     try {
       const config = await loadConfig(process.cwd());
       const schemaPath = options.schema ?? config?.schema ?? "./schema.zmodel";
-      const outputPath = options.migrations ?? config?.migrations?.migrationsFolder ?? "./migrations";
+      const outputPath =
+        options.migrations ?? config?.migrations?.migrationsFolder ?? "./prisma/migrations";
+      const dialect = (options.dialect ?? config?.dialect ?? "sqlite") as
+        | "sqlite"
+        | "postgres"
+        | "mysql";
 
-      const initialDiff = await getSchemaDiff({
+      // Check for changes first
+      const hasChanges = await hasPrismaSchemaChanges({
         schemaPath,
         outputPath,
       });
 
-      if (!hasAnyChanges(initialDiff)) {
+      if (!hasChanges) {
         console.log(chalk.yellow("No schema changes detected"));
         return;
       }
 
-      const renameTables = await promptTableRenames(initialDiff);
-      const diffAfterTableRenames = await getSchemaDiff({
-        schemaPath,
-        outputPath,
-        renameTables,
-      });
-      const renameColumns = await promptColumnRenames(diffAfterTableRenames);
-
-      const finalDiff = await getSchemaDiff({
-        schemaPath,
-        outputPath,
-        renameTables,
-        renameColumns,
-      });
-
-      const confirmed = await confirmDestructiveChanges(finalDiff);
-      if (!confirmed) {
-        console.log(chalk.yellow("Migration generation cancelled"));
-        return;
-      }
-
+      // Get migration name
       const name = options.name ?? (await promptForMigrationName("migration"));
-      const migration = await createMigration({
+
+      // TODO: Add rename prompts and destructive change confirmation
+      // For now, we generate without prompts
+
+      const migration = await createPrismaMigration({
         name,
         schemaPath,
         outputPath,
-        renameTables,
-        renameColumns,
+        dialect,
       });
 
       if (!migration) {
@@ -80,7 +77,8 @@ program
         return;
       }
 
-      console.log(chalk.green(`✓ Migration created: ${migration.filename}`));
+      console.log(chalk.green(`✓ Migration created: ${migration.folderName}/migration.sql`));
+      console.log(chalk.gray(`  Path: ${migration.folderPath}`));
     } catch (error) {
       console.error(chalk.red("Error creating migration:"), error);
       process.exit(1);
@@ -89,41 +87,60 @@ program
 
 program
   .command("migrate:apply")
-  .description("Apply migrations using Kysely migrator")
+  .description("Apply pending SQL migrations")
   .option("-m, --migrations <path>", "Migrations directory")
   .option("--dialect <dialect>", "Database dialect (sqlite, postgres, mysql)")
   .option("--url <url>", "Database connection URL")
+  .option("--table <name>", "Migrations table name (default: _prisma_migrations)")
+  .option("--schema <name>", "Migrations schema (PostgreSQL only, default: public)")
   .action(async (options) => {
     console.log(chalk.blue("Applying migrations..."));
     try {
       const config = await loadConfig(process.cwd());
-      const outputPath = options.migrations ?? config?.migrations?.migrationsFolder ?? "./migrations";
+      const outputPath =
+        options.migrations ?? config?.migrations?.migrationsFolder ?? "./prisma/migrations";
       const dialect = (options.dialect ?? config?.dialect ?? "sqlite") as
         | "sqlite"
         | "postgres"
         | "mysql";
       const connectionUrl = options.url ?? config?.dbCredentials?.url;
+      const migrationsTable =
+        options.table ?? config?.migrations?.migrationsTable ?? "_prisma_migrations";
+      const migrationsSchema =
+        options.schema ?? config?.migrations?.migrationsSchema ?? "public";
+
       if (dialect !== "sqlite" && !connectionUrl) {
         throw new Error("Database connection URL is required for non-sqlite dialects");
       }
+
       const databasePath = dialect === "sqlite" ? resolveSqlitePath(connectionUrl) : undefined;
 
-      const result = await applyMigrations({
+      const result = await applyPrismaMigrations({
         migrationsFolder: outputPath,
         dialect,
         connectionUrl,
         databasePath,
+        migrationsTable,
+        migrationsSchema,
       });
 
-      if (result.results.length === 0) {
+      if (result.applied.length === 0 && !result.failed) {
         console.log(chalk.yellow("No pending migrations"));
+        if (result.alreadyApplied.length > 0) {
+          console.log(chalk.gray(`  ${result.alreadyApplied.length} migration(s) already applied`));
+        }
         return;
       }
 
-      result.results.forEach((item) => {
-        const color = item.status === "Success" ? chalk.green : chalk.red;
-        console.log(color(`${item.status}: ${item.migrationName}`));
-      });
+      for (const item of result.applied) {
+        console.log(chalk.green(`✓ Applied: ${item.migrationName} (${item.duration}ms)`));
+      }
+
+      if (result.failed) {
+        console.log(chalk.red(`✗ Failed: ${result.failed.migrationName}`));
+        console.log(chalk.red(`  Error: ${result.failed.error}`));
+        process.exit(1);
+      }
     } catch (error) {
       console.error(chalk.red("Error applying migrations:"), error);
       process.exit(1);
@@ -140,7 +157,8 @@ program
     try {
       const config = await loadConfig(process.cwd());
       const schemaPath = options.schema ?? config?.schema ?? "./schema.zmodel";
-      const outputPath = options.migrations ?? config?.migrations?.migrationsFolder ?? "./migrations";
+      const outputPath =
+        options.migrations ?? config?.migrations?.migrationsFolder ?? "./prisma/migrations";
 
       const result = await initSnapshot({
         schemaPath,
@@ -200,125 +218,6 @@ async function promptForMigrationName(defaultName: string): Promise<string> {
 
   const trimmed = answer.trim();
   return trimmed.length > 0 ? trimmed : defaultName;
-}
-
-async function promptTableRenames(diff: Awaited<ReturnType<typeof getSchemaDiff>>) {
-  const removed = diff.removedModels.map((model) => model.name);
-  const added = diff.addedModels.map((model) => model.name);
-  const mappings: Array<{ from: string; to: string }> = [];
-
-  let available = [...added];
-
-  for (const table of removed) {
-    if (available.length === 0) {
-      break;
-    }
-    const answer = await promptChoice(
-      `Table '${table}' was removed. Rename to one of [${available.join(", ")}] or leave blank to delete: `,
-    );
-    if (!answer) {
-      continue;
-    }
-    if (available.includes(answer)) {
-      mappings.push({ from: table, to: answer });
-      available = available.filter((item) => item !== answer);
-    }
-  }
-
-  return mappings;
-}
-
-async function promptColumnRenames(diff: Awaited<ReturnType<typeof getSchemaDiff>>) {
-  const removedByTable = new Map<string, string[]>();
-  const addedByTable = new Map<string, string[]>();
-
-  diff.removedFields.forEach((entry) => {
-    if (!removedByTable.has(entry.tableName)) {
-      removedByTable.set(entry.tableName, []);
-    }
-    removedByTable.get(entry.tableName)?.push(entry.columnName);
-  });
-
-  diff.addedFields.forEach((entry) => {
-    if (!addedByTable.has(entry.tableName)) {
-      addedByTable.set(entry.tableName, []);
-    }
-    addedByTable.get(entry.tableName)?.push(entry.columnName);
-  });
-
-  const mappings: Array<{ table: string; from: string; to: string }> = [];
-
-  for (const [table, removedColumns] of removedByTable.entries()) {
-    const addedColumns = [...(addedByTable.get(table) ?? [])];
-    if (addedColumns.length === 0) {
-      continue;
-    }
-
-    for (const column of removedColumns) {
-      if (addedColumns.length === 0) {
-        break;
-      }
-      const answer = await promptChoice(
-        `Column '${table}.${column}' was removed. Rename to one of [${addedColumns.join(", ")}] or leave blank to delete: `,
-      );
-      if (!answer) {
-        continue;
-      }
-      if (addedColumns.includes(answer)) {
-        mappings.push({ table, from: column, to: answer });
-        const next = addedColumns.filter((item) => item !== answer);
-        addedByTable.set(table, next);
-      }
-    }
-  }
-
-  return mappings;
-}
-
-async function confirmDestructiveChanges(diff: Awaited<ReturnType<typeof getSchemaDiff>>) {
-  const removedTables = diff.removedModels.map((model) => model.name);
-  const removedColumns = diff.removedFields.map((field) => `${field.tableName}.${field.columnName}`);
-
-  if (removedTables.length === 0 && removedColumns.length === 0) {
-    return true;
-  }
-
-  const summary = [
-    removedTables.length > 0 ? `tables: ${removedTables.join(", ")}` : null,
-    removedColumns.length > 0 ? `columns: ${removedColumns.join(", ")}` : null,
-  ]
-    .filter(Boolean)
-    .join(" | ");
-
-  const answer = await promptChoice(
-    `Destructive changes detected (${summary}). Proceed? (y/N): `,
-  );
-  return answer.toLowerCase() === "y";
-}
-
-async function promptChoice(message: string): Promise<string> {
-  const prompt = getPromptProvider();
-  const answer = await prompt.question(message);
-  return answer.trim();
-}
-
-function hasAnyChanges(diff: Awaited<ReturnType<typeof getSchemaDiff>>) {
-  return (
-    diff.addedModels.length > 0 ||
-    diff.removedModels.length > 0 ||
-    diff.addedFields.length > 0 ||
-    diff.removedFields.length > 0 ||
-    diff.alteredFields.length > 0 ||
-    diff.addedUniqueConstraints.length > 0 ||
-    diff.removedUniqueConstraints.length > 0 ||
-    diff.addedIndexes.length > 0 ||
-    diff.removedIndexes.length > 0 ||
-    diff.addedForeignKeys.length > 0 ||
-    diff.removedForeignKeys.length > 0 ||
-    diff.primaryKeyChanges.length > 0 ||
-    diff.renamedTables.length > 0 ||
-    diff.renamedColumns.length > 0
-  );
 }
 
 function resolveSqlitePath(url?: string): string | undefined {

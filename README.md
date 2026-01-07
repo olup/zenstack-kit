@@ -1,12 +1,13 @@
 # zenstack-kit
 
-Drizzle-kit like CLI tooling for ZenStack schemas with Kysely support.
+Drizzle-kit like CLI tooling for ZenStack schemas with Prisma-compatible migrations.
 
 ## Features
 
-- **Migration Generation** - Create Kysely migrations from ZenStack schema changes
+- **Prisma-Compatible Migrations** - Generates SQL migrations in Prisma folder format (`migrations/<timestamp>_<name>/migration.sql`)
+- **Migration Tracking** - Uses `_prisma_migrations` table, compatible with `prisma migrate deploy`
 - **Database Introspection** - Generate ZenStack schemas from existing databases
-- **No Prisma Dependency** - Uses ZenStack AST directly for diffing
+- **No Prisma Dependency** - Uses ZenStack AST directly for diffing and Kysely for SQL compilation
 - **Multi-Dialect Support** - SQLite, PostgreSQL, and MySQL
 - **Configuration File** - Type-safe configuration via `defineConfig()`
 
@@ -60,11 +61,22 @@ zenstack generate
 zenstack-kit migrate:generate --name init
 ```
 
-### 5. Apply migrations with Kysely
+This creates a migration in Prisma format:
+```
+prisma/migrations/
+  20240115120000_init/
+    migration.sql
+  meta/
+    _snapshot.json
+```
+
+### 5. Apply migrations
 
 ```bash
 zenstack-kit migrate:apply --dialect postgres --url "$DATABASE_URL"
 ```
+
+Migrations are tracked in the `_prisma_migrations` table, making them compatible with `prisma migrate deploy`.
 
 ## CLI Commands
 
@@ -86,7 +98,7 @@ Options:
 
 ### `zenstack-kit migrate:generate`
 
-Generate a new migration file based on schema changes.
+Generate a new SQL migration file based on schema changes.
 
 ```bash
 zenstack-kit migrate:generate --name add_users
@@ -95,28 +107,38 @@ zenstack-kit migrate:generate --name add_users
 Options:
 - `-n, --name <name>` - Migration name (if omitted, you'll be prompted)
 - `-s, --schema <path>` - Path to ZenStack schema (defaults to config or `./schema.zmodel`)
-- `-m, --migrations <path>` - Migrations directory (defaults to config or `./migrations`)
+- `-m, --migrations <path>` - Migrations directory (defaults to config or `./prisma/migrations`)
+- `--dialect <dialect>` - Database dialect for SQL generation (defaults to config or `sqlite`)
+
+Output:
+- Creates `<timestamp>_<name>/migration.sql` in the migrations folder
+- Updates `meta/_snapshot.json` to track schema state
 
 Snapshots:
-- A schema snapshot is stored at `./migrations/meta/_snapshot.json` and used to diff changes.
+- A schema snapshot is stored at `./prisma/migrations/meta/_snapshot.json` and used to diff changes.
 - Naming is deterministic and explicit to avoid engine-specific defaults:
   - `pk_<table>`, `uniq_<table>_<cols>`, `idx_<table>_<cols>`, `fk_<table>_<col>_<refTable>_<refCol>`
-- If tables or columns are removed and new ones are added, the CLI will prompt to resolve renames.
-- Destructive changes (table/column drops) require confirmation before a migration is written.
 
 ### `zenstack-kit migrate:apply`
 
-Apply pending migrations using Kysely's migrator.
+Apply pending SQL migrations to the database.
 
 ```bash
 zenstack-kit migrate:apply --dialect postgres --url postgres://...
 ```
 
 Options:
-- `-m, --migrations <path>` - Migrations directory (defaults to config or `./migrations`)
+- `-m, --migrations <path>` - Migrations directory (defaults to config or `./prisma/migrations`)
 - `--dialect <dialect>` - Database dialect (defaults to config or `sqlite`)
 - `--url <url>` - Database connection URL (defaults to config). For sqlite, pass a file path or `file:...` URL.
   - For non-sqlite dialects, a URL is required.
+- `--table <name>` - Migrations table name (defaults to `_prisma_migrations`)
+- `--schema <name>` - Migrations schema (PostgreSQL only, defaults to `public`)
+
+Behavior:
+- Reads `migration.sql` files from each timestamped folder
+- Tracks applied migrations in `_prisma_migrations` table
+- Compatible with `prisma migrate deploy` for teams using both tools
 
 ### `zenstack-kit pull`
 
@@ -172,21 +194,59 @@ console.log(result.snapshotPath); // "./migrations/meta/_snapshot.json"
 console.log(result.tableCount); // 5
 ```
 
-### `createMigration(options)`
+### `createPrismaMigration(options)`
 
-Create a migration file.
+Create a Prisma-compatible SQL migration file.
 
 ```ts
-import { createMigration } from "zenstack-kit";
+import { createPrismaMigration } from "zenstack-kit";
 
-const migration = await createMigration({
+const migration = await createPrismaMigration({
   name: "add_users",
   schemaPath: "./schema.zmodel",
-  outputPath: "./migrations",
+  outputPath: "./prisma/migrations",
+  dialect: "postgres",
 });
 
 if (migration) {
-  console.log(migration.filename); // "20240115120000_add_users.ts"
+  console.log(migration.folderName); // "20240115120000_add_users"
+  console.log(migration.sql); // "CREATE TABLE ..."
+}
+```
+
+### `applyPrismaMigrations(options)`
+
+Apply pending migrations to the database.
+
+```ts
+import { applyPrismaMigrations } from "zenstack-kit";
+
+const result = await applyPrismaMigrations({
+  migrationsFolder: "./prisma/migrations",
+  dialect: "postgres",
+  connectionUrl: process.env.DATABASE_URL,
+  migrationsTable: "_prisma_migrations", // optional
+  migrationsSchema: "public", // optional, PostgreSQL only
+});
+
+console.log(result.applied); // [{ migrationName: "20240115120000_add_users", duration: 42 }]
+console.log(result.alreadyApplied); // ["20240114000000_init"]
+```
+
+### `hasPrismaSchemaChanges(options)`
+
+Check if there are pending schema changes.
+
+```ts
+import { hasPrismaSchemaChanges } from "zenstack-kit";
+
+const hasChanges = await hasPrismaSchemaChanges({
+  schemaPath: "./schema.zmodel",
+  outputPath: "./prisma/migrations",
+});
+
+if (hasChanges) {
+  console.log("Schema has pending changes");
 }
 ```
 
@@ -232,9 +292,15 @@ import { defineConfig } from "zenstack-kit";
 
 export default defineConfig({
   schema: "./schema.zmodel",
+  out: "./generated",
   dialect: "postgres",
+  dbCredentials: {
+    url: process.env.DATABASE_URL,
+  },
   migrations: {
-    migrationsFolder: "./migrations",
+    migrationsFolder: "./prisma/migrations", // default
+    migrationsTable: "_prisma_migrations",   // default
+    migrationsSchema: "public",              // PostgreSQL only
   },
 });
 ```
@@ -246,9 +312,10 @@ export default defineConfig({
 
 ## Future Improvements
 
-- Dialect-specific column type mappings and defaults
-- Safer diffing for destructive changes (rename detection, column type narrowing warnings)
-- Migration status/rollback CLI helpers on top of Kysely migrator
+- Interactive rename detection prompts (table/column renames vs drop+create)
+- Destructive change confirmation prompts
+- Migration rollback support
+- `migrate:status` command to show pending migrations
 
 ## License
 

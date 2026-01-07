@@ -22,10 +22,12 @@ export interface ZenStackKitConfig {
   };
   /** Migration settings */
   migrations?: {
-    /** Directory for migration files */
+    /** Directory for migration files (default: ./prisma/migrations) */
     migrationsFolder?: string;
-    /** Table name for migration metadata */
+    /** Table name for migration metadata (default: _prisma_migrations) */
     migrationsTable?: string;
+    /** Database schema for migrations table (PostgreSQL only, default: public) */
+    migrationsSchema?: string;
   };
   /** Code generation settings */
   codegen?: {
@@ -67,8 +69,9 @@ export function defineConfig(config: ZenStackKitConfig): ZenStackKitConfig {
     ...config,
     out: config.out ?? "./generated",
     migrations: {
-      migrationsFolder: "./migrations",
-      migrationsTable: "_zenstack_migrations",
+      migrationsFolder: "./prisma/migrations",
+      migrationsTable: "_prisma_migrations",
+      migrationsSchema: "public",
       ...config.migrations,
     },
     codegen: {

@@ -22,6 +22,17 @@ export {
 export { applyMigrations, type ApplyMigrationsOptions } from "./migrate-apply.js";
 export { setPromptProvider, type PromptProvider } from "./prompts.js";
 
+// Prisma-compatible migrations (default)
+export {
+  createPrismaMigration,
+  applyPrismaMigrations,
+  hasPrismaSchemaChanges,
+  type PrismaMigrationOptions,
+  type PrismaMigration,
+  type ApplyPrismaMigrationsOptions,
+  type ApplyPrismaMigrationsResult,
+} from "./prisma-migrations.js";
+
 // CLI utilities
 export { defineConfig, type ZenStackKitConfig } from "./config.js";
 

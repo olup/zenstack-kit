@@ -99,14 +99,14 @@ describe("zenstack-kit CLI", () => {
     }
   });
 
-  it("should resolve renames and confirm destructive changes via prompts", async () => {
+  it("should generate SQL for schema changes in Prisma folder format", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "zenstack-kit-cli-"));
     const schemaPath = path.join(tempDir, "schema.zmodel");
     const migrationsPath = path.join(tempDir, "migrations");
 
-    const schemaV1 = `datasource db {\n  provider = \"sqlite\"\n  url      = \"file:./test.db\"\n}\n\ngenerator client {\n  provider = \"prisma-client-js\"\n}\n\nmodel User {\n  id    Int     @id @default(autoincrement())\n  name  String\n  email String\n}\n`;
+    const schemaV1 = `datasource db {\n  provider = \"sqlite\"\n  url      = \"file:./test.db\"\n}\n\ngenerator client {\n  provider = \"prisma-client-js\"\n}\n\nmodel User {\n  id    Int     @id @default(autoincrement())\n  name  String\n}\n`;
 
-    const schemaV2 = `datasource db {\n  provider = \"sqlite\"\n  url      = \"file:./test.db\"\n}\n\ngenerator client {\n  provider = \"prisma-client-js\"\n}\n\nmodel Person {\n  id    Int     @id @default(autoincrement())\n  name  String\n  mail  String\n}\n`;
+    const schemaV2 = `datasource db {\n  provider = \"sqlite\"\n  url      = \"file:./test.db\"\n}\n\ngenerator client {\n  provider = \"prisma-client-js\"\n}\n\nmodel User {\n  id    Int     @id @default(autoincrement())\n  name  String\n  email String\n}\n`;
 
     try {
       await fs.writeFile(schemaPath, schemaV1, "utf-8");
@@ -126,30 +126,34 @@ describe("zenstack-kit CLI", () => {
 
       await fs.writeFile(schemaPath, schemaV2, "utf-8");
 
-      const answers = ["person", "mail", "y"];
       await runCli(
         [
           "migrate:generate",
           "--name",
-          "rename_user",
+          "add_email",
           "--schema",
           schemaPath,
           "--migrations",
           migrationsPath,
         ],
         tempDir,
-        { ZENSTACK_KIT_PROMPT_ANSWERS: JSON.stringify(answers) },
       );
 
+      // Check Prisma folder structure
       const files = await fs.readdir(migrationsPath);
-      const migrationFile = files.find((file) => file.includes("rename_user"));
-      if (!migrationFile) {
-        throw new Error("Expected rename migration to be written");
+      const migrationFolder = files.find((file) => file.includes("add_email"));
+      if (!migrationFolder) {
+        throw new Error("Expected add_email migration folder to be created");
       }
 
-      const migrationContent = await fs.readFile(path.join(migrationsPath, migrationFile), "utf-8");
-      expect(migrationContent).toContain("renameTo('person')");
-      expect(migrationContent).toContain("renameColumn('email', 'mail')");
+      // Check migration.sql exists in the folder
+      const sqlPath = path.join(migrationsPath, migrationFolder, "migration.sql");
+      const migrationContent = await fs.readFile(sqlPath, "utf-8");
+
+      // Should contain SQL for adding email column
+      expect(migrationContent).toContain("alter table");
+      expect(migrationContent).toContain("add column");
+      expect(migrationContent).toContain('"email"');
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
