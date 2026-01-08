@@ -57,10 +57,6 @@ export interface SchemaSnapshotFile {
   schema: SchemaSnapshot;
 }
 
-function normalizeName(value: string): string {
-  return value.replace(/[^a-z0-9_]+/gi, "_").toLowerCase();
-}
-
 type AttributeNode = DataModelAttribute | DataFieldAttribute;
 
 function getAttribute(node: { attributes: AttributeNode[] }, name: string): AttributeNode | undefined {
@@ -159,31 +155,40 @@ function mapFieldTypeToSQL(fieldType: string): string {
   return typeMap[fieldType] ?? "text";
 }
 
+/**
+ * Prisma-compatible constraint naming conventions
+ *
+ * Prisma uses PostgreSQL-aligned naming:
+ * - Primary Key: {Table}_pkey
+ * - Unique: {Table}_{columns}_key
+ * - Index: {Table}_{columns}_idx
+ * - Foreign Key: {Table}_{columns}_fkey
+ */
+
 function buildPrimaryKeyName(tableName: string, explicitName?: string): string {
-  return explicitName ?? `pk_${normalizeName(tableName)}`;
+  return explicitName ?? `${tableName}_pkey`;
 }
 
 function buildUniqueName(tableName: string, columns: string[], explicitName?: string): string {
   if (explicitName) return explicitName;
-  return `uniq_${normalizeName(tableName)}_${normalizeName(columns.join("_"))}`;
+  return `${tableName}_${columns.join("_")}_key`;
 }
 
 function buildIndexName(tableName: string, columns: string[], explicitName?: string): string {
   if (explicitName) return explicitName;
-  return `idx_${normalizeName(tableName)}_${normalizeName(columns.join("_"))}`;
+  return `${tableName}_${columns.join("_")}_idx`;
 }
 
 function buildForeignKeyName(
   tableName: string,
   columns: string[],
-  referencedTable: string,
-  referencedColumns: string[],
+  _referencedTable: string,
+  _referencedColumns: string[],
   explicitName?: string,
 ): string {
   if (explicitName) return explicitName;
-  return `fk_${normalizeName(tableName)}_${normalizeName(columns.join("_"))}_${normalizeName(
-    referencedTable,
-  )}_${normalizeName(referencedColumns.join("_"))}`;
+  // Prisma uses {Table}_{columns}_fkey (doesn't include referenced table/columns in name)
+  return `${tableName}_${columns.join("_")}_fkey`;
 }
 
 function getFieldType(field: DataField): { type: string; isRelation: boolean } {

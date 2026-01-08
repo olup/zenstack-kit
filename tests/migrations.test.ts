@@ -60,9 +60,10 @@ describe("createMigration", () => {
 
     expect(migration.up).toContain("createTable('user')");
     expect(migration.up).toContain("createTable('post')");
-    expect(migration.up).toContain("addPrimaryKeyConstraint('pk_user'");
-    expect(migration.up).toContain("addPrimaryKeyConstraint('pk_post'");
-    expect(migration.up).toContain("addUniqueConstraint('uniq_user_email'");
+    // Prisma-compatible naming: {table}_pkey, {table}_{columns}_key
+    expect(migration.up).toContain("addPrimaryKeyConstraint('user_pkey'");
+    expect(migration.up).toContain("addPrimaryKeyConstraint('post_pkey'");
+    expect(migration.up).toContain("addUniqueConstraint('user_email_key'");
     expect(migration.up).toContain("notNull()");
   });
 
@@ -150,7 +151,8 @@ describe("createMigration", () => {
 
       expect(second.up).toContain("alterTable('user')");
       expect(second.up).toContain("addColumn('email'");
-      expect(second.up).toContain("addUniqueConstraint('uniq_user_email'");
+      // Prisma naming: {table}_{columns}_key
+      expect(second.up).toContain("addUniqueConstraint('user_email_key'");
       expect(second.up).not.toContain("createTable('user')");
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
@@ -235,8 +237,9 @@ describe("createMigration", () => {
         throw new Error("Expected second migration to be generated");
       }
 
-      expect(second.up).toContain("createIndex('idx_post_title')");
-      expect(second.up).toContain("createIndex('idx_user_name')");
+      // Prisma naming: {table}_{columns}_idx
+      expect(second.up).toContain("createIndex('post_title_idx')");
+      expect(second.up).toContain("createIndex('user_name_idx')");
       expect(second.up).not.toContain("createTable('post')");
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
@@ -309,7 +312,8 @@ describe("createMigration", () => {
         throw new Error("Expected second migration to be generated");
       }
 
-      expect(second.up).toContain("dropIndex('idx_post_title')");
+      // Prisma naming: {table}_{columns}_idx
+      expect(second.up).toContain("dropIndex('post_title_idx')");
       expect(second.up).not.toContain("createTable('post')");
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
@@ -350,7 +354,8 @@ describe("createMigration", () => {
         throw new Error("Expected second migration to be generated");
       }
 
-      expect(second.up).toContain("dropConstraint('uniq_user_name_email')");
+      // Prisma naming: {table}_{columns}_key
+      expect(second.up).toContain("dropConstraint('user_name_email_key')");
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
@@ -390,8 +395,9 @@ describe("createMigration", () => {
         throw new Error("Expected second migration to be generated");
       }
 
-      expect(second.up).toContain("dropConstraint('fk_post_authorid_user_id')");
-      expect(second.up).toContain("addForeignKeyConstraint('fk_post_editorid_user_id'");
+      // Prisma naming: {table}_{columns}_fkey
+      expect(second.up).toContain("dropConstraint('post_authorId_fkey')");
+      expect(second.up).toContain("addForeignKeyConstraint('post_editorId_fkey'");
       expect(second.up).toContain("addColumn('editorId'");
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
@@ -432,8 +438,9 @@ describe("createMigration", () => {
         throw new Error("Expected second migration to be generated");
       }
 
-      expect(second.up).toContain("dropConstraint('pk_user')");
-      expect(second.up).toContain("addPrimaryKeyConstraint('pk_user'");
+      // Prisma naming: {table}_pkey
+      expect(second.up).toContain("dropConstraint('user_pkey')");
+      expect(second.up).toContain("addPrimaryKeyConstraint('user_pkey'");
       expect(second.up).toContain("[\"org\",\"name\"]");
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
@@ -474,7 +481,8 @@ describe("createMigration", () => {
         throw new Error("Expected second migration to be generated");
       }
 
-      expect(second.up).toContain("createIndex('idx_user_name_email')");
+      // Prisma naming: {table}_{columns}_idx
+      expect(second.up).toContain("createIndex('user_name_email_idx')");
       expect(second.up).toContain(".column('name')");
       expect(second.up).toContain(".column('email')");
     } finally {
@@ -542,7 +550,8 @@ describe("createMigration", () => {
 
       const postIndexes = await db.executeQuery(sql`PRAGMA index_list('post')`.compile(db));
       const postIndexNames = postIndexes.rows.map((row: any) => row.name);
-      expect(postIndexNames).toContain("idx_post_title");
+      // Prisma naming: {table}_{columns}_idx
+      expect(postIndexNames).toContain("post_title_idx");
 
       const foreignKeys = await db.executeQuery(sql`PRAGMA foreign_key_list('post')`.compile(db));
       const fkTables = foreignKeys.rows.map((row: any) => row.table);
