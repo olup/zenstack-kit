@@ -8,7 +8,7 @@
  */
 
 // Core functionality
-export { introspectSchema, type SchemaInfo, type ModelInfo, type FieldInfo } from "./introspect.js";
+export { introspectSchema, type SchemaInfo, type ModelInfo, type FieldInfo } from "./schema/introspect.js";
 export {
   createMigration,
   getSchemaDiff,
@@ -18,30 +18,41 @@ export {
   type Migration,
   type InitSnapshotOptions,
   type InitSnapshotResult,
-} from "./migrations.js";
-export { applyMigrations, type ApplyMigrationsOptions } from "./migrate-apply.js";
-export { setPromptProvider, type PromptProvider } from "./prompts.js";
+} from "./migrations/diff.js";
+export { applyMigrations, type ApplyMigrationsOptions } from "./migrations/apply.js";
+export { setPromptProvider, type PromptProvider } from "./cli/prompt-provider.js";
 
 // Prisma-compatible migrations (default)
 export {
   createPrismaMigration,
   applyPrismaMigrations,
   hasPrismaSchemaChanges,
+  createInitialMigration,
+  initializeSnapshot,
+  hasSnapshot,
+  scanMigrationFolders,
+  readMigrationLog,
+  writeMigrationLog,
+  appendToMigrationLog,
+  getMigrationLogPath,
+  calculateChecksum,
   type PrismaMigrationOptions,
   type PrismaMigration,
   type ApplyPrismaMigrationsOptions,
   type ApplyPrismaMigrationsResult,
-} from "./prisma-migrations.js";
+  type CreateInitialMigrationOptions,
+  type MigrationLogEntry,
+} from "./migrations/prisma.js";
 
 // CLI utilities
-export { defineConfig, type ZenStackKitConfig } from "./config.js";
+export { defineConfig, type ZenStackKitConfig } from "./config/index.js";
 
 // Kysely integration
 export {
   createKyselyAdapter,
   type KyselyAdapter,
   type KyselyDialect,
-} from "./kysely-adapter.js";
+} from "./sql/kysely-adapter.js";
 
 // Database pull (introspection)
-export { pullSchema, type PullOptions, type PullResult } from "./pull.js";
+export { pullSchema, type PullOptions, type PullResult } from "./schema/pull.js";

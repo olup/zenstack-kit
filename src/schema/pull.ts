@@ -7,7 +7,7 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 import { sql } from "kysely";
-import { createKyselyAdapter, type KyselyDialect } from "./kysely-adapter.js";
+import { createKyselyAdapter, type KyselyDialect } from "../sql/kysely-adapter.js";
 
 export interface PullOptions {
   /** Database dialect */

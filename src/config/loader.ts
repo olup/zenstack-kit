@@ -4,7 +4,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import type { ZenStackKitConfig } from "./config.js";
+import type { ZenStackKitConfig } from "./index.js";
 import { createRequire } from "module";
 
 const CONFIG_FILES = [
@@ -14,29 +14,40 @@ const CONFIG_FILES = [
   "zenstack-kit.config.cjs",
 ];
 
-export async function loadConfig(cwd: string): Promise<ZenStackKitConfig | null> {
+export interface LoadedConfig {
+  config: ZenStackKitConfig;
+  configPath: string;
+  configDir: string;
+}
+
+export async function loadConfig(cwd: string): Promise<LoadedConfig | null> {
   const configPath = CONFIG_FILES.map((file) => path.join(cwd, file)).find((file) => fs.existsSync(file));
   if (!configPath) {
     return null;
   }
 
   const ext = path.extname(configPath);
+  let config: ZenStackKitConfig;
 
   if (ext === ".cjs") {
     const require = createRequire(import.meta.url);
     const loaded = require(configPath);
-    return (loaded.default ?? loaded) as ZenStackKitConfig;
-  }
-
-  if (ext === ".js" || ext === ".mjs") {
+    config = (loaded.default ?? loaded) as ZenStackKitConfig;
+  } else if (ext === ".js" || ext === ".mjs") {
     const loaded = await import(pathToFileUrl(configPath));
-    return (loaded.default ?? loaded) as ZenStackKitConfig;
+    config = (loaded.default ?? loaded) as ZenStackKitConfig;
+  } else {
+    const { default: jiti } = await import("jiti");
+    const loader = jiti(import.meta.url, { interopDefault: true });
+    const loaded = loader(configPath);
+    config = (loaded.default ?? loaded) as ZenStackKitConfig;
   }
 
-  const { default: jiti } = await import("jiti");
-  const loader = jiti(import.meta.url, { interopDefault: true });
-  const loaded = loader(configPath);
-  return (loaded.default ?? loaded) as ZenStackKitConfig;
+  return {
+    config,
+    configPath,
+    configDir: path.dirname(configPath),
+  };
 }
 
 function pathToFileUrl(filePath: string): string {

@@ -14,7 +14,7 @@ import {
   type SchemaColumn,
   type SchemaSnapshotFile,
   generateSchemaSnapshot,
-} from "./schema-snapshot.js";
+} from "../schema/snapshot.js";
 
 export interface MigrationOptions {
   /** Migration name */

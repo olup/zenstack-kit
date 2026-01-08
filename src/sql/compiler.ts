@@ -20,7 +20,7 @@ import {
   sql,
 } from "kysely";
 import type { KyselyDialect } from "./kysely-adapter.js";
-import type { SchemaTable, SchemaColumn } from "./schema-snapshot.js";
+import type { SchemaTable, SchemaColumn } from "../schema/snapshot.js";
 
 /**
  * Create a Kysely instance configured for SQL compilation only (no actual DB connection)
@@ -76,12 +76,17 @@ export function compileCreateTable(
   let builder = db.schema.createTable(model.name);
 
   for (const column of model.columns) {
-    const columnType = mapColumnType(column.type, options.dialect);
+    const columnType = mapColumnType(column.type, options.dialect, {
+      isArray: column.isArray,
+      isAutoincrement: column.isAutoincrement,
+    });
     builder = builder.addColumn(column.name, sql.raw(columnType) as any, (cb) => {
-      if (column.notNull) {
+      // For SERIAL types in PostgreSQL, NOT NULL is implicit and we don't need defaults
+      const isSerialType = column.isAutoincrement && options.dialect === "postgres";
+      if (column.notNull && !isSerialType) {
         cb = cb.notNull();
       }
-      if (column.default !== undefined) {
+      if (column.default !== undefined && !isSerialType) {
         cb = cb.defaultTo(sql.raw(formatDefault(column.default, options.dialect)));
       }
       return cb;
@@ -134,16 +139,20 @@ export function compileAddColumn(
   options: CompileSqlOptions
 ): string {
   const db = createCompilerDb(options.dialect);
-  const columnType = mapColumnType(column.type, options.dialect);
+  const columnType = mapColumnType(column.type, options.dialect, {
+    isArray: column.isArray,
+    isAutoincrement: column.isAutoincrement,
+  });
 
   return (
     db.schema
       .alterTable(tableName)
       .addColumn(column.name, sql.raw(columnType) as any, (cb) => {
-        if (column.notNull) {
+        const isSerialType = column.isAutoincrement && options.dialect === "postgres";
+        if (column.notNull && !isSerialType) {
           cb = cb.notNull();
         }
-        if (column.default !== undefined) {
+        if (column.default !== undefined && !isSerialType) {
           cb = cb.defaultTo(sql.raw(formatDefault(column.default, options.dialect)));
         }
         return cb;
@@ -366,7 +375,33 @@ export function compileAlterColumn(
 /**
  * Map our internal type names to dialect-specific SQL types
  */
-function mapColumnType(type: string, dialect: KyselyDialect): string {
+function mapColumnType(
+  type: string,
+  dialect: KyselyDialect,
+  options?: { isArray?: boolean; isAutoincrement?: boolean }
+): string {
+  const { isArray, isAutoincrement } = options ?? {};
+
+  // Handle autoincrement for PostgreSQL - use SERIAL/BIGSERIAL types
+  if (isAutoincrement && dialect === "postgres") {
+    if (type === "bigint") {
+      return "bigserial";
+    }
+    return "serial";
+  }
+
+  // Handle autoincrement for MySQL
+  if (isAutoincrement && dialect === "mysql") {
+    // MySQL uses AUTO_INCREMENT attribute, but we can map to appropriate int type
+    // The actual AUTO_INCREMENT will be added via the modifier
+    return type;
+  }
+
+  // Handle array types for PostgreSQL
+  if (isArray && dialect === "postgres") {
+    return `${type}[]`;
+  }
+
   // Most types are already SQL types from our snapshot, just return as-is
   // The Kysely compiler will handle dialect-specific adjustments
   return type;

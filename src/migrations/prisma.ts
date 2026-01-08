@@ -11,10 +11,10 @@ import * as fs from "fs/promises";
 import * as path from "path";
 import * as crypto from "crypto";
 import { sql } from "kysely";
-import type { KyselyDialect } from "./kysely-adapter.js";
-import { createKyselyAdapter } from "./kysely-adapter.js";
-import type { SchemaSnapshot, SchemaTable, SchemaColumn } from "./schema-snapshot.js";
-import { generateSchemaSnapshot, createSnapshot, type SchemaSnapshotFile } from "./schema-snapshot.js";
+import type { KyselyDialect } from "../sql/kysely-adapter.js";
+import { createKyselyAdapter } from "../sql/kysely-adapter.js";
+import type { SchemaSnapshot, SchemaTable, SchemaColumn } from "../schema/snapshot.js";
+import { generateSchemaSnapshot, createSnapshot, type SchemaSnapshotFile } from "../schema/snapshot.js";
 import {
   compileCreateTable,
   compileDropTable,
@@ -29,7 +29,7 @@ import {
   compileAddForeignKeyConstraint,
   compileAddPrimaryKeyConstraint,
   compileAlterColumn,
-} from "./sql-compiler.js";
+} from "../sql/compiler.js";
 
 export interface PrismaMigrationOptions {
   /** Migration name */
@@ -92,7 +92,7 @@ interface PrismaMigrationsRow {
 /**
  * Generate timestamp string for migration folder name
  */
-function generateTimestamp(): string {
+export function generateTimestamp(): string {
   const now = new Date();
   return [
     now.getFullYear(),
@@ -137,7 +137,7 @@ async function readSnapshot(snapshotPath: string): Promise<SchemaSnapshotFile | 
 /**
  * Write snapshot to file
  */
-async function writeSnapshot(snapshotPath: string, schema: SchemaSnapshot): Promise<void> {
+export async function writeSnapshot(snapshotPath: string, schema: SchemaSnapshot): Promise<void> {
   const snapshot = createSnapshot(schema);
   await fs.mkdir(path.dirname(snapshotPath), { recursive: true });
   await fs.writeFile(snapshotPath, JSON.stringify(snapshot, null, 2), "utf-8");
@@ -337,6 +337,47 @@ function diffSchemas(previous: SchemaSnapshot | null, current: SchemaSnapshot) {
 }
 
 /**
+ * Topologically sort tables so that referenced tables come before tables that reference them.
+ * Tables with no foreign keys come first, then tables that only reference already-ordered tables.
+ */
+function sortTablesByDependencies(tables: SchemaTable[]): SchemaTable[] {
+  const tableMap = new Map(tables.map((t) => [t.name, t]));
+  const sorted: SchemaTable[] = [];
+  const visited = new Set<string>();
+  const visiting = new Set<string>();
+
+  function visit(tableName: string): void {
+    if (visited.has(tableName)) return;
+    if (visiting.has(tableName)) {
+      // Circular dependency - just add it and let the DB handle it
+      return;
+    }
+
+    const table = tableMap.get(tableName);
+    if (!table) return;
+
+    visiting.add(tableName);
+
+    // Visit all tables this table references first
+    for (const fk of table.foreignKeys) {
+      if (tableMap.has(fk.referencedTable) && fk.referencedTable !== tableName) {
+        visit(fk.referencedTable);
+      }
+    }
+
+    visiting.delete(tableName);
+    visited.add(tableName);
+    sorted.push(table);
+  }
+
+  for (const table of tables) {
+    visit(table.name);
+  }
+
+  return sorted;
+}
+
+/**
  * Build SQL statements from diff
  */
 function buildSqlStatements(
@@ -359,8 +400,9 @@ function buildSqlStatements(
     down.unshift(compileRenameColumn(rename.tableName, rename.to, rename.from, compileOpts));
   }
 
-  // Create tables
-  for (const model of diff.addedModels) {
+  // Create tables (sorted by dependency order so referenced tables are created first)
+  const sortedAddedModels = sortTablesByDependencies(diff.addedModels);
+  for (const model of sortedAddedModels) {
     up.push(compileCreateTable(model, compileOpts));
     down.unshift(compileDropTable(model.name, compileOpts));
   }
@@ -617,6 +659,69 @@ export async function createPrismaMigration(
   // Update snapshot
   await writeSnapshot(snapshotPath, currentSchema);
 
+  // Append to migration log
+  const checksum = calculateChecksum(sqlContent);
+  await appendToMigrationLog(options.outputPath, { name: folderName, checksum });
+
+  return {
+    folderName,
+    folderPath,
+    sql: sqlContent,
+    timestamp,
+  };
+}
+
+export interface CreateInitialMigrationOptions {
+  /** Migration name (default: "init") */
+  name?: string;
+  /** Path to ZenStack schema file */
+  schemaPath: string;
+  /** Output directory for migration files */
+  outputPath: string;
+  /** Database dialect for SQL generation */
+  dialect: KyselyDialect;
+}
+
+/**
+ * Create an initial migration that creates all tables from scratch.
+ * This is used when initializing a project where the database is empty.
+ */
+export async function createInitialMigration(
+  options: CreateInitialMigrationOptions
+): Promise<PrismaMigration> {
+  const currentSchema = await generateSchemaSnapshot(options.schemaPath);
+  const { snapshotPath } = getSnapshotPaths(options.outputPath);
+
+  // Diff against empty schema to get full creation SQL
+  const diff = diffSchemas(null, currentSchema);
+  const { up } = buildSqlStatements(diff, options.dialect);
+
+  const timestamp = Date.now();
+  const timestampStr = generateTimestamp();
+  const safeName = (options.name ?? "init").replace(/[^a-z0-9]/gi, "_").toLowerCase();
+  const folderName = `${timestampStr}_${safeName}`;
+  const folderPath = path.join(options.outputPath, folderName);
+
+  // Build migration.sql content with comments
+  const sqlContent = [
+    `-- Migration: ${options.name ?? "init"}`,
+    `-- Generated at: ${new Date(timestamp).toISOString()}`,
+    "",
+    ...up,
+    "",
+  ].join("\n");
+
+  // Create migration folder and file
+  await fs.mkdir(folderPath, { recursive: true });
+  await fs.writeFile(path.join(folderPath, "migration.sql"), sqlContent, "utf-8");
+
+  // Update snapshot
+  await writeSnapshot(snapshotPath, currentSchema);
+
+  // Append to migration log
+  const checksum = calculateChecksum(sqlContent);
+  await appendToMigrationLog(options.outputPath, { name: folderName, checksum });
+
   return {
     folderName,
     folderPath,
@@ -742,7 +847,7 @@ async function recordMigration(
 /**
  * Calculate SHA256 checksum of migration SQL
  */
-function calculateChecksum(sql: string): string {
+export function calculateChecksum(sql: string): string {
   return crypto.createHash("sha256").update(sql).digest("hex");
 }
 
@@ -846,6 +951,22 @@ export async function applyPrismaMigrations(
       }
 
       const checksum = calculateChecksum(sqlContent);
+
+      // Verify checksum against migration log
+      const migrationLog = await readMigrationLog(options.migrationsFolder);
+      const logEntry = migrationLog.find((m) => m.name === folderName);
+      if (logEntry && logEntry.checksum !== checksum) {
+        result.failed = {
+          migrationName: folderName,
+          error:
+            `Checksum mismatch for migration ${folderName}.\n` +
+            `Expected: ${logEntry.checksum}\n` +
+            `Found: ${checksum}\n` +
+            `The migration file may have been modified after generation.`,
+        };
+        break;
+      }
+
       const startTime = Date.now();
 
       try {
@@ -905,3 +1026,150 @@ export async function hasPrismaSchemaChanges(options: {
     diff.primaryKeyChanges.length > 0
   );
 }
+
+// ============================================================================
+// Migration Log
+// ============================================================================
+
+export interface MigrationLogEntry {
+  /** Migration folder name e.g. "20260108120000_init" */
+  name: string;
+  /** SHA256 checksum of migration.sql content (64 hex chars) */
+  checksum: string;
+}
+
+const MIGRATION_LOG_HEADER = `# zenstack-kit migration log
+# Format: <migration_name> <checksum>
+`;
+
+/**
+ * Get the path to the migration log file
+ */
+export function getMigrationLogPath(outputPath: string): string {
+  return path.join(outputPath, "meta", "_migration_log");
+}
+
+/**
+ * Parse migration log content into entries
+ */
+function parseMigrationLog(content: string): MigrationLogEntry[] {
+  return content
+    .split("\n")
+    .filter((line) => line.trim() && !line.startsWith("#"))
+    .map((line) => {
+      const [name, checksum] = line.split(" ");
+      return { name, checksum };
+    })
+    .filter((entry) => entry.name && entry.checksum);
+}
+
+/**
+ * Serialize migration log entries to string
+ */
+function serializeMigrationLog(entries: MigrationLogEntry[]): string {
+  const lines = entries.map((e) => `${e.name} ${e.checksum}`).join("\n");
+  return MIGRATION_LOG_HEADER + lines + (lines.length > 0 ? "\n" : "");
+}
+
+/**
+ * Read migration log file
+ */
+export async function readMigrationLog(outputPath: string): Promise<MigrationLogEntry[]> {
+  const logPath = getMigrationLogPath(outputPath);
+  try {
+    const content = await fs.readFile(logPath, "utf-8");
+    return parseMigrationLog(content);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+}
+
+/**
+ * Write migration log file
+ */
+export async function writeMigrationLog(outputPath: string, entries: MigrationLogEntry[]): Promise<void> {
+  const logPath = getMigrationLogPath(outputPath);
+  await fs.mkdir(path.dirname(logPath), { recursive: true });
+  await fs.writeFile(logPath, serializeMigrationLog(entries), "utf-8");
+}
+
+/**
+ * Append a single entry to the migration log
+ */
+export async function appendToMigrationLog(outputPath: string, entry: MigrationLogEntry): Promise<void> {
+  const entries = await readMigrationLog(outputPath);
+  entries.push(entry);
+  await writeMigrationLog(outputPath, entries);
+}
+
+/**
+ * Scan migration folders and compute checksums for each
+ */
+export async function scanMigrationFolders(outputPath: string): Promise<MigrationLogEntry[]> {
+  const entries: MigrationLogEntry[] = [];
+
+  try {
+    const dirEntries = await fs.readdir(outputPath, { withFileTypes: true });
+    const migrationFolders = dirEntries
+      .filter((e) => e.isDirectory() && /^\d{14}_/.test(e.name))
+      .map((e) => e.name)
+      .sort();
+
+    for (const folderName of migrationFolders) {
+      const sqlPath = path.join(outputPath, folderName, "migration.sql");
+      try {
+        const sqlContent = await fs.readFile(sqlPath, "utf-8");
+        const checksum = calculateChecksum(sqlContent);
+        entries.push({ name: folderName, checksum });
+      } catch {
+        // Skip folders without migration.sql
+      }
+    }
+  } catch (error) {
+    if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+
+  return entries;
+}
+
+/**
+ * Check if snapshot exists
+ */
+export async function hasSnapshot(outputPath: string): Promise<boolean> {
+  const { snapshotPath } = getSnapshotPaths(outputPath);
+  try {
+    await fs.access(snapshotPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Initialize snapshot from schema without generating migration
+ */
+export async function initializeSnapshot(options: {
+  schemaPath: string;
+  outputPath: string;
+}): Promise<{ snapshotPath: string; tableCount: number }> {
+  const currentSchema = await generateSchemaSnapshot(options.schemaPath);
+  const { snapshotPath } = getSnapshotPaths(options.outputPath);
+
+  await writeSnapshot(snapshotPath, currentSchema);
+
+  return {
+    snapshotPath,
+    tableCount: currentSchema.tables.length,
+  };
+}
+
+/**
+ * Export getSnapshotPaths for external use
+ */
+export { getSnapshotPaths };

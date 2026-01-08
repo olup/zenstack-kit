@@ -10,7 +10,15 @@ import {
   createPrismaMigration,
   applyPrismaMigrations,
   hasPrismaSchemaChanges,
-} from "../src/prisma-migrations.js";
+  readMigrationLog,
+  writeMigrationLog,
+  scanMigrationFolders,
+  getMigrationLogPath,
+  hasSnapshot,
+  initializeSnapshot,
+  createInitialMigration,
+  calculateChecksum,
+} from "../src/migrations/prisma.js";
 
 const TEST_DIR = path.join(process.cwd(), "tests", "prisma-test");
 const SCHEMA_PATH = path.join(TEST_DIR, "schema.zmodel");
@@ -1390,4 +1398,406 @@ describe("Prisma migrations - migrations table configuration", () => {
     expect(tables.map((t) => t.name)).toContain("team_a_migrations");
     expect(tables.map((t) => t.name)).toContain("team_b_migrations");
   }, 10000); // Increase timeout
+});
+
+describe("Prisma migrations - migration log", () => {
+  beforeAll(() => {
+    cleanup();
+  });
+
+  afterAll(() => {
+    cleanup();
+  });
+
+  beforeEach(() => {
+    if (fs.existsSync(MIGRATIONS_PATH)) {
+      fs.rmSync(MIGRATIONS_PATH, { recursive: true });
+    }
+  });
+
+  it("should create migration log when generating migration", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id Int @id
+      }
+    `);
+
+    const migration = await createPrismaMigration({
+      name: "init",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    const logPath = getMigrationLogPath(MIGRATIONS_PATH);
+    expect(fs.existsSync(logPath)).toBe(true);
+
+    const logContent = fs.readFileSync(logPath, "utf-8");
+    expect(logContent).toContain(migration!.folderName);
+    expect(logContent).toContain("# zenstack-kit migration log");
+  });
+
+  it("should append to migration log on subsequent migrations", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id Int @id
+      }
+    `);
+
+    await createPrismaMigration({
+      name: "init",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    await new Promise((r) => setTimeout(r, 1100));
+
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id    Int    @id
+        email String
+      }
+    `);
+
+    await createPrismaMigration({
+      name: "add_email",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    const entries = await readMigrationLog(MIGRATIONS_PATH);
+    expect(entries.length).toBe(2);
+    expect(entries[0].name).toContain("init");
+    expect(entries[1].name).toContain("add_email");
+  });
+
+  it("should store correct checksums in migration log", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id Int @id
+      }
+    `);
+
+    const migration = await createPrismaMigration({
+      name: "init",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    const entries = await readMigrationLog(MIGRATIONS_PATH);
+    expect(entries.length).toBe(1);
+
+    // Verify checksum matches actual file
+    const sqlPath = path.join(migration!.folderPath, "migration.sql");
+    const sqlContent = fs.readFileSync(sqlPath, "utf-8");
+    const expectedChecksum = calculateChecksum(sqlContent);
+
+    expect(entries[0].checksum).toBe(expectedChecksum);
+    expect(entries[0].checksum.length).toBe(64); // SHA256 hex
+  });
+
+  it("should read/write migration log correctly", async () => {
+    const testEntries = [
+      { name: "20260108120000_init", checksum: "a".repeat(64) },
+      { name: "20260108130000_add_email", checksum: "b".repeat(64) },
+    ];
+
+    await writeMigrationLog(MIGRATIONS_PATH, testEntries);
+
+    const readEntries = await readMigrationLog(MIGRATIONS_PATH);
+    expect(readEntries).toEqual(testEntries);
+  });
+
+  it("should return empty array when no migration log exists", async () => {
+    const entries = await readMigrationLog(MIGRATIONS_PATH);
+    expect(entries).toEqual([]);
+  });
+
+  it("should scan migration folders and compute checksums", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id Int @id
+      }
+    `);
+
+    await createPrismaMigration({
+      name: "init",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    // Clear the migration log
+    const logPath = getMigrationLogPath(MIGRATIONS_PATH);
+    fs.rmSync(logPath);
+
+    // Scan should still find the migration
+    const scanned = await scanMigrationFolders(MIGRATIONS_PATH);
+    expect(scanned.length).toBe(1);
+    expect(scanned[0].name).toContain("init");
+    expect(scanned[0].checksum.length).toBe(64);
+  });
+});
+
+describe("Prisma migrations - checksum verification", () => {
+  let db: ReturnType<typeof Database> | null = null;
+
+  beforeAll(() => {
+    cleanup();
+    fs.mkdirSync(TEST_DIR, { recursive: true });
+  });
+
+  afterAll(() => {
+    if (db) {
+      db.close();
+      db = null;
+    }
+    cleanup();
+  });
+
+  beforeEach(() => {
+    if (db) {
+      db.close();
+      db = null;
+    }
+    if (fs.existsSync(DB_PATH)) {
+      fs.unlinkSync(DB_PATH);
+    }
+    if (fs.existsSync(MIGRATIONS_PATH)) {
+      fs.rmSync(MIGRATIONS_PATH, { recursive: true });
+    }
+  });
+
+  it("should fail apply when migration file is modified", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id Int @id
+      }
+    `);
+
+    const migration = await createPrismaMigration({
+      name: "init",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    // Tamper with the migration file
+    const sqlPath = path.join(migration!.folderPath, "migration.sql");
+    const originalContent = fs.readFileSync(sqlPath, "utf-8");
+    fs.writeFileSync(sqlPath, originalContent + "\n-- Tampered!", "utf-8");
+
+    const result = await applyPrismaMigrations({
+      migrationsFolder: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      databasePath: DB_PATH,
+    });
+
+    expect(result.failed).toBeDefined();
+    expect(result.failed?.error).toContain("Checksum mismatch");
+    expect(result.applied.length).toBe(0);
+  });
+
+  it("should apply migration when checksum matches", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id Int @id
+      }
+    `);
+
+    await createPrismaMigration({
+      name: "init",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    const result = await applyPrismaMigrations({
+      migrationsFolder: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      databasePath: DB_PATH,
+    });
+
+    expect(result.failed).toBeUndefined();
+    expect(result.applied.length).toBe(1);
+  });
+
+  it("should apply migrations without log (backward compatibility)", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id Int @id
+      }
+    `);
+
+    await createPrismaMigration({
+      name: "init",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    // Remove migration log
+    const logPath = getMigrationLogPath(MIGRATIONS_PATH);
+    fs.rmSync(logPath);
+
+    const result = await applyPrismaMigrations({
+      migrationsFolder: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      databasePath: DB_PATH,
+    });
+
+    // Should still work without log (no checksum verification)
+    expect(result.failed).toBeUndefined();
+    expect(result.applied.length).toBe(1);
+  });
+});
+
+describe("Prisma migrations - init helpers", () => {
+  beforeAll(() => {
+    cleanup();
+  });
+
+  afterAll(() => {
+    cleanup();
+  });
+
+  beforeEach(() => {
+    if (fs.existsSync(MIGRATIONS_PATH)) {
+      fs.rmSync(MIGRATIONS_PATH, { recursive: true });
+    }
+  });
+
+  it("should detect when snapshot exists", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id Int @id
+      }
+    `);
+
+    expect(await hasSnapshot(MIGRATIONS_PATH)).toBe(false);
+
+    await initializeSnapshot({
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+    });
+
+    expect(await hasSnapshot(MIGRATIONS_PATH)).toBe(true);
+  });
+
+  it("should create snapshot without migration", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id Int @id
+      }
+
+      model Post {
+        id Int @id
+      }
+    `);
+
+    const result = await initializeSnapshot({
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+    });
+
+    expect(result.tableCount).toBe(2);
+    expect(fs.existsSync(result.snapshotPath)).toBe(true);
+
+    // No migration folder should be created
+    const entries = fs.readdirSync(MIGRATIONS_PATH, { withFileTypes: true });
+    const migrationFolders = entries.filter(
+      (e) => e.isDirectory() && /^\d{14}_/.test(e.name)
+    );
+    expect(migrationFolders.length).toBe(0);
+  });
+
+  it("should create initial migration with full schema", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id    Int    @id
+        email String @unique
+      }
+
+      model Post {
+        id    Int    @id
+        title String
+      }
+    `);
+
+    const migration = await createInitialMigration({
+      name: "init",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    expect(migration.folderName).toMatch(/^\d{14}_init$/);
+    expect(migration.sql).toContain("create table");
+    expect(migration.sql).toContain('"user"');
+    expect(migration.sql).toContain('"post"');
+
+    // Should also create snapshot and migration log
+    expect(await hasSnapshot(MIGRATIONS_PATH)).toBe(true);
+    const log = await readMigrationLog(MIGRATIONS_PATH);
+    expect(log.length).toBe(1);
+    expect(log[0].name).toBe(migration.folderName);
+  });
 });

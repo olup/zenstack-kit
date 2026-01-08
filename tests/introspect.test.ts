@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { introspectSchema } from "../src/introspect.js";
+import { introspectSchema } from "../src/schema/introspect.js";
 import * as path from "path";
 
 const FIXTURES_PATH = path.join(process.cwd(), "tests", "fixtures");

@@ -7,9 +7,10 @@ Drizzle-kit like CLI tooling for ZenStack schemas with Prisma-compatible migrati
 - **Prisma-Compatible Migrations** - Generates SQL migrations in Prisma folder format (`migrations/<timestamp>_<name>/migration.sql`)
 - **Migration Tracking** - Uses `_prisma_migrations` table, compatible with `prisma migrate deploy`
 - **Database Introspection** - Generate ZenStack schemas from existing databases
+- **Interactive CLI** - Beautiful terminal UI powered by Ink with command selection and prompts
 - **No Prisma Dependency** - Uses ZenStack AST directly for diffing and Kysely for SQL compilation
 - **Multi-Dialect Support** - SQLite, PostgreSQL, and MySQL
-- **Configuration File** - Type-safe configuration via `defineConfig()`
+- **Type-Safe Configuration** - Configuration via `defineConfig()` with full TypeScript support
 
 ## Installation
 
@@ -34,6 +35,18 @@ export default defineConfig({
 });
 ```
 
+For SQLite, use `file` instead of `url`:
+
+```ts
+export default defineConfig({
+  schema: "./schema.zmodel",
+  dialect: "sqlite",
+  dbCredentials: {
+    file: "./dev.db",
+  },
+});
+```
+
 ### 2. Create a ZenStack schema
 
 ```zmodel
@@ -49,154 +62,154 @@ model User {
 }
 ```
 
-### 3. Generate ZenStack artifacts
+### 3. Initialize the migration system
 
 ```bash
-zenstack generate
+# Interactive mode - launches the CLI menu
+zenstack-kit
+
+# Or run init directly
+zenstack-kit init
 ```
 
-### 4. Generate a migration
+The `init` command offers two options:
+- **Baseline only** - Create a snapshot without generating a migration (use when your database already matches the schema)
+- **Create initial migration** - Create a snapshot and generate an initial migration (use when starting fresh)
+
+### 4. Generate migrations
 
 ```bash
-zenstack-kit migrate:generate --name init
+zenstack-kit migrate:generate --name add_posts
 ```
 
 This creates a migration in Prisma format:
 ```
 prisma/migrations/
-  20240115120000_init/
+  20240115120000_add_posts/
     migration.sql
   meta/
     _snapshot.json
+    _migration_log
 ```
 
 ### 5. Apply migrations
 
 ```bash
-zenstack-kit migrate:apply --dialect postgres --url "$DATABASE_URL"
+zenstack-kit migrate:apply
 ```
 
 Migrations are tracked in the `_prisma_migrations` table, making them compatible with `prisma migrate deploy`.
 
 ## CLI Commands
 
-Configuration:
-- The CLI loads `zenstack-kit.config.ts|js|mjs|cjs` automatically when present.
-- CLI flags override config values.
+Run `zenstack-kit` without arguments to launch the interactive menu, or run commands directly.
 
 ### `zenstack-kit init`
 
-Initialize a snapshot from an existing schema without generating a migration. Use this to baseline an existing database before starting to track migrations.
+Initialize the migration system for your project.
 
 ```bash
+# Interactive mode
 zenstack-kit init
+
+# Non-interactive: baseline only (database already matches schema)
+zenstack-kit init --baseline
+
+# Non-interactive: create initial migration (fresh database)
+zenstack-kit init --create-initial
 ```
 
 Options:
-- `-s, --schema <path>` - Path to ZenStack schema (defaults to config or `./schema.zmodel`)
-- `-m, --migrations <path>` - Migrations directory (defaults to config or `./migrations`)
+- `-s, --schema <path>` - Path to ZenStack schema
+- `-m, --migrations <path>` - Migrations directory
+- `--baseline` - Create snapshot only, no migration
+- `--create-initial` - Create snapshot and initial migration
 
 ### `zenstack-kit migrate:generate`
 
-Generate a new SQL migration file based on schema changes.
+Generate a new SQL migration from schema changes.
 
 ```bash
 zenstack-kit migrate:generate --name add_users
 ```
 
 Options:
-- `-n, --name <name>` - Migration name (if omitted, you'll be prompted)
-- `-s, --schema <path>` - Path to ZenStack schema (defaults to config or `./schema.zmodel`)
-- `-m, --migrations <path>` - Migrations directory (defaults to config or `./prisma/migrations`)
-- `--dialect <dialect>` - Database dialect for SQL generation (defaults to config or `sqlite`)
-
-Output:
-- Creates `<timestamp>_<name>/migration.sql` in the migrations folder
-- Updates `meta/_snapshot.json` to track schema state
-
-Snapshots:
-- A schema snapshot is stored at `./prisma/migrations/meta/_snapshot.json` and used to diff changes.
-- Naming is deterministic and explicit to avoid engine-specific defaults:
-  - `pk_<table>`, `uniq_<table>_<cols>`, `idx_<table>_<cols>`, `fk_<table>_<col>_<refTable>_<refCol>`
+- `-n, --name <name>` - Migration name (prompted if omitted in interactive mode)
+- `-s, --schema <path>` - Path to ZenStack schema
+- `-m, --migrations <path>` - Migrations directory
+- `--dialect <dialect>` - Database dialect (`sqlite`, `postgres`, `mysql`)
 
 ### `zenstack-kit migrate:apply`
 
-Apply pending SQL migrations to the database.
+Apply pending migrations to the database.
 
 ```bash
-zenstack-kit migrate:apply --dialect postgres --url postgres://...
+zenstack-kit migrate:apply
 ```
 
 Options:
-- `-m, --migrations <path>` - Migrations directory (defaults to config or `./prisma/migrations`)
-- `--dialect <dialect>` - Database dialect (defaults to config or `sqlite`)
-- `--url <url>` - Database connection URL (defaults to config). For sqlite, pass a file path or `file:...` URL.
-  - For non-sqlite dialects, a URL is required.
-- `--table <name>` - Migrations table name (defaults to `_prisma_migrations`)
-- `--schema <name>` - Migrations schema (PostgreSQL only, defaults to `public`)
-
-Behavior:
-- Reads `migration.sql` files from each timestamped folder
-- Tracks applied migrations in `_prisma_migrations` table
-- Compatible with `prisma migrate deploy` for teams using both tools
+- `-m, --migrations <path>` - Migrations directory
+- `--dialect <dialect>` - Database dialect
+- `--url <url>` - Database connection URL (overrides config)
+- `--table <name>` - Migrations table name (default: `_prisma_migrations`)
+- `--db-schema <name>` - Database schema for migrations table (PostgreSQL only, default: `public`)
 
 ### `zenstack-kit pull`
 
-Introspect an existing database and generate a ZenStack schema file.
+Introspect an existing database and generate a ZenStack schema.
 
 ```bash
-zenstack-kit pull --dialect postgres --url postgres://... --output schema.zmodel
+zenstack-kit pull --output schema.zmodel
 ```
 
 Options:
-- `-o, --output <path>` - Output path for schema (defaults to `./schema.zmodel`)
-- `--dialect <dialect>` - Database dialect (defaults to config or `sqlite`)
-- `--url <url>` - Database connection URL (defaults to config). For sqlite, pass a file path or `file:...` URL.
+- `-o, --output <path>` - Output path for schema (default: `./schema.zmodel`)
+- `--dialect <dialect>` - Database dialect
+- `--url <url>` - Database connection URL
 
 Features:
 - Detects tables, columns, and types
-- Extracts primary keys (single and composite via `@@id`)
-- Extracts unique constraints (single `@unique` and composite `@@unique`)
-- Extracts foreign key relationships and generates `@relation` fields
-- Extracts indexes and generates `@@index`
-- Converts snake_case column names to camelCase with `@map` attributes
-- Generates `@@map` when table names differ from model names
+- Extracts primary keys (single and composite)
+- Extracts unique constraints and indexes
+- Extracts foreign key relationships
+- Converts snake_case to camelCase with `@map` attributes
 
-## API Reference
+## Configuration
 
-### `introspectSchema(options)`
-
-Introspect a ZenStack schema file.
+Create a `zenstack-kit.config.ts` file in your project root:
 
 ```ts
-import { introspectSchema } from "zenstack-kit";
+import { defineConfig } from "zenstack-kit";
 
-const schema = await introspectSchema({
-  schemaPath: "./schema.zmodel",
+export default defineConfig({
+  // Path to your ZenStack schema
+  schema: "./schema.zmodel",
+
+  // Database dialect: "sqlite" | "postgres" | "mysql"
+  dialect: "postgres",
+
+  // Database credentials (dialect-specific)
+  dbCredentials: {
+    url: process.env.DATABASE_URL,  // For postgres/mysql
+    // file: "./dev.db",            // For sqlite
+  },
+
+  // Migration settings
+  migrations: {
+    migrationsFolder: "./prisma/migrations",  // Default
+    migrationsTable: "_prisma_migrations",    // Default
+    migrationsSchema: "public",               // PostgreSQL only
+  },
 });
-
-console.log(schema.models); // [{ name: "User", fields: [...] }, ...]
 ```
 
-### `initSnapshot(options)`
+CLI flags override config file values.
 
-Initialize a snapshot from the current schema without generating a migration.
-
-```ts
-import { initSnapshot } from "zenstack-kit";
-
-const result = await initSnapshot({
-  schemaPath: "./schema.zmodel",
-  outputPath: "./migrations",
-});
-
-console.log(result.snapshotPath); // "./migrations/meta/_snapshot.json"
-console.log(result.tableCount); // 5
-```
+## Programmatic API
 
 ### `createPrismaMigration(options)`
 
-Create a Prisma-compatible SQL migration file.
+Create a Prisma-compatible SQL migration.
 
 ```ts
 import { createPrismaMigration } from "zenstack-kit";
@@ -210,7 +223,7 @@ const migration = await createPrismaMigration({
 
 if (migration) {
   console.log(migration.folderName); // "20240115120000_add_users"
-  console.log(migration.sql); // "CREATE TABLE ..."
+  console.log(migration.sql);
 }
 ```
 
@@ -225,11 +238,9 @@ const result = await applyPrismaMigrations({
   migrationsFolder: "./prisma/migrations",
   dialect: "postgres",
   connectionUrl: process.env.DATABASE_URL,
-  migrationsTable: "_prisma_migrations", // optional
-  migrationsSchema: "public", // optional, PostgreSQL only
 });
 
-console.log(result.applied); // [{ migrationName: "20240115120000_add_users", duration: 42 }]
+console.log(result.applied);        // [{ migrationName: "...", duration: 42 }]
 console.log(result.alreadyApplied); // ["20240114000000_init"]
 ```
 
@@ -244,26 +255,6 @@ const hasChanges = await hasPrismaSchemaChanges({
   schemaPath: "./schema.zmodel",
   outputPath: "./prisma/migrations",
 });
-
-if (hasChanges) {
-  console.log("Schema has pending changes");
-}
-```
-
-### `createKyselyAdapter(options)`
-
-Create a Kysely instance configured for your database.
-
-```ts
-import { createKyselyAdapter } from "zenstack-kit";
-
-const { db, destroy } = await createKyselyAdapter({
-  dialect: "postgres",
-  connectionUrl: process.env.DATABASE_URL,
-});
-
-// Use db...
-await destroy();
 ```
 
 ### `pullSchema(options)`
@@ -279,43 +270,43 @@ const result = await pullSchema({
   outputPath: "./schema.zmodel",
 });
 
-console.log(result.outputPath); // "./schema.zmodel"
 console.log(result.tableCount); // 5
 ```
 
-### `defineConfig(config)`
+### `createKyselyAdapter(options)`
 
-Define configuration with type safety.
+Create a Kysely instance for your database.
 
 ```ts
-import { defineConfig } from "zenstack-kit";
+import { createKyselyAdapter } from "zenstack-kit";
 
-export default defineConfig({
-  schema: "./schema.zmodel",
-  out: "./generated",
+const { db, destroy } = await createKyselyAdapter({
   dialect: "postgres",
-  dbCredentials: {
-    url: process.env.DATABASE_URL,
-  },
-  migrations: {
-    migrationsFolder: "./prisma/migrations", // default
-    migrationsTable: "_prisma_migrations",   // default
-    migrationsSchema: "public",              // PostgreSQL only
-  },
+  connectionUrl: process.env.DATABASE_URL,
 });
+
+// Use db for queries...
+await destroy();
 ```
+
+## Prisma Compatibility
+
+zenstack-kit is designed to be compatible with Prisma's migration system:
+
+- **Same folder structure** - `migrations/<timestamp>_<name>/migration.sql`
+- **Same tracking table** - `_prisma_migrations` with identical schema
+- **Interoperable** - Teams can use `prisma migrate deploy` to apply zenstack-kit migrations
+
+Constraint naming follows Prisma conventions:
+- Primary keys: `<table>_pkey`
+- Unique constraints: `<table>_<columns>_key`
+- Indexes: `<table>_<columns>_idx`
+- Foreign keys: `<table>_<columns>_fkey`
 
 ## Requirements
 
 - Node.js 18+
 - `kysely` >= 0.27.0
-
-## Future Improvements
-
-- Interactive rename detection prompts (table/column renames vs drop+create)
-- Destructive change confirmation prompts
-- Migration rollback support
-- `migrate:status` command to show pending migrations
 
 ## License
 

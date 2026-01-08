@@ -3,8 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { createMigration } from "../src/migrations.js";
-import { applyMigrations } from "../src/migrate-apply.js";
+import { createMigration } from "../src/migrations/diff.js";
+import { applyMigrations } from "../src/migrations/apply.js";
 import * as fs from "fs/promises";
 import * as path from "path";
 import * as os from "os";

@@ -1,0 +1,334 @@
+#!/usr/bin/env node
+
+/**
+ * zenstack-kit CLI - Database tooling for ZenStack schemas
+ *
+ * Commands:
+ *   migrate:generate  Generate a new SQL migration
+ *   migrate:apply     Apply pending migrations
+ *   init              Initialize snapshot from existing schema
+ *   pull              Introspect database and generate schema
+ */
+
+import React, { useState, useEffect } from "react";
+import { render, Box, Text, useApp, useInput } from "ink";
+import SelectInput from "ink-select-input";
+import {
+  runMigrateGenerate,
+  runMigrateApply,
+  runInit,
+  runPull,
+  CommandError,
+  type CommandContext,
+  type CommandOptions,
+  type LogFn,
+} from "./commands.js";
+import { promptSnapshotExists, promptFreshInit } from "./prompts.js";
+
+type Command = "migrate:generate" | "migrate:apply" | "init" | "pull" | "help" | "exit";
+
+interface CommandOption {
+  label: string;
+  value: Command;
+  description: string;
+}
+
+const commands: CommandOption[] = [
+  { label: "migrate:generate", value: "migrate:generate", description: "Generate a new SQL migration file" },
+  { label: "migrate:apply", value: "migrate:apply", description: "Apply pending SQL migrations" },
+  { label: "init", value: "init", description: "Initialize snapshot from existing schema" },
+  { label: "pull", value: "pull", description: "Introspect database and generate schema" },
+  { label: "help", value: "help", description: "Show help information" },
+  { label: "exit", value: "exit", description: "Exit the CLI" },
+];
+
+// Parse command line arguments
+function parseArgs(): { command?: Command; options: CommandOptions } {
+  const args = process.argv.slice(2);
+  const options: CommandOptions = {};
+  let command: Command | undefined;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "migrate:generate" || arg === "migrate:apply" || arg === "init" || arg === "pull" || arg === "help") {
+      command = arg as Command;
+    } else if (arg === "--name" || arg === "-n") {
+      options.name = args[++i];
+    } else if (arg === "--schema" || arg === "-s") {
+      options.schema = args[++i];
+    } else if (arg === "--migrations" || arg === "-m") {
+      options.migrations = args[++i];
+    } else if (arg === "--dialect") {
+      options.dialect = args[++i];
+    } else if (arg === "--url") {
+      options.url = args[++i];
+    } else if (arg === "--output" || arg === "-o") {
+      options.output = args[++i];
+    } else if (arg === "--table") {
+      options.table = args[++i];
+    } else if (arg === "--db-schema") {
+      options.dbSchema = args[++i];
+    } else if (arg === "--baseline") {
+      options.baseline = true;
+    } else if (arg === "--create-initial") {
+      options.createInitial = true;
+    }
+  }
+
+  return { command, options };
+}
+
+// Status component for showing messages
+function Status({ type, message }: { type: "info" | "success" | "error" | "warning"; message: string }) {
+  const colors = {
+    info: "blue",
+    success: "green",
+    error: "red",
+    warning: "yellow",
+  } as const;
+
+  const symbols = {
+    info: "ℹ",
+    success: "✓",
+    error: "✗",
+    warning: "⚠",
+  };
+
+  return (
+    <Text color={colors[type]}>
+      {symbols[type]} {message}
+    </Text>
+  );
+}
+
+// Help display component
+function HelpDisplay() {
+  return (
+    <Box flexDirection="column" paddingY={1}>
+      <Text bold color="cyan">zenstack-kit</Text>
+      <Text dimColor>Database tooling for ZenStack schemas</Text>
+      <Text> </Text>
+      <Text bold>Commands:</Text>
+      {commands.filter(c => c.value !== "exit").map((cmd) => (
+        <Box key={cmd.value} marginLeft={2}>
+          <Box width={20}>
+            <Text color="yellow">{cmd.label}</Text>
+          </Box>
+          <Text dimColor>{cmd.description}</Text>
+        </Box>
+      ))}
+      <Text> </Text>
+      <Text bold>Options:</Text>
+      <Box marginLeft={2} flexDirection="column">
+        <Text dimColor>-s, --schema &lt;path&gt;     Path to ZenStack schema</Text>
+        <Text dimColor>-m, --migrations &lt;path&gt;  Migrations directory</Text>
+        <Text dimColor>-n, --name &lt;name&gt;        Migration name</Text>
+        <Text dimColor>--dialect &lt;dialect&gt;      Database dialect (sqlite, postgres, mysql)</Text>
+        <Text dimColor>--url &lt;url&gt;              Database connection URL</Text>
+        <Text dimColor>--create-initial         Create initial migration (skip prompt)</Text>
+        <Text dimColor>--baseline               Create baseline only (skip prompt)</Text>
+      </Box>
+    </Box>
+  );
+}
+
+// Text input component for migration name
+function TextInput({
+  prompt,
+  defaultValue,
+  onSubmit
+}: {
+  prompt: string;
+  defaultValue: string;
+  onSubmit: (value: string) => void;
+}) {
+  const [value, setValue] = useState("");
+
+  useInput((input, key) => {
+    if (key.return) {
+      onSubmit(value.trim() || defaultValue);
+    } else if (key.backspace || key.delete) {
+      setValue((prev) => prev.slice(0, -1));
+    } else if (!key.ctrl && !key.meta && input) {
+      setValue((prev) => prev + input);
+    }
+  });
+
+  return (
+    <Box>
+      <Text color="cyan">? </Text>
+      <Text>{prompt} </Text>
+      <Text dimColor>({defaultValue}): </Text>
+      <Text>{value}</Text>
+      <Text color="gray">█</Text>
+    </Box>
+  );
+}
+
+// Main CLI App component
+interface CliAppProps {
+  initialCommand?: Command;
+  options: CommandOptions;
+}
+
+function CliApp({ initialCommand, options }: CliAppProps) {
+  const { exit } = useApp();
+  const [command, setCommand] = useState<Command | null>(initialCommand || null);
+  const [phase, setPhase] = useState<"select" | "input" | "running" | "done">(initialCommand ? "running" : "select");
+  const [migrationName, setMigrationName] = useState<string | null>(options.name || null);
+  const [logs, setLogs] = useState<Array<{ type: "info" | "success" | "error" | "warning"; message: string }>>([]);
+
+  const log: LogFn = (type, message) => {
+    setLogs((prev) => [...prev, { type, message }]);
+  };
+
+  // Handle command selection
+  const handleSelect = (item: { value: Command }) => {
+    if (item.value === "exit") {
+      exit();
+      return;
+    }
+    if (item.value === "help") {
+      setCommand("help");
+      setPhase("done");
+      return;
+    }
+    setCommand(item.value);
+    if (item.value === "migrate:generate" && !migrationName) {
+      setPhase("input");
+    } else {
+      setPhase("running");
+    }
+  };
+
+  // Handle migration name input
+  const handleNameSubmit = (name: string) => {
+    setMigrationName(name);
+    setPhase("running");
+  };
+
+  // Execute commands
+  useEffect(() => {
+    if (phase !== "running" || !command) return;
+
+    const run = async () => {
+      const ctx: CommandContext = {
+        cwd: process.cwd(),
+        options: { ...options, name: migrationName || options.name },
+        log,
+        promptSnapshotExists: async () => {
+          const choice = await promptSnapshotExists();
+          return choice as "skip" | "reinitialize";
+        },
+        promptFreshInit: async () => {
+          const choice = await promptFreshInit();
+          return choice as "baseline" | "create_initial";
+        },
+      };
+
+      try {
+        if (command === "migrate:generate") {
+          await runMigrateGenerate(ctx);
+        } else if (command === "migrate:apply") {
+          await runMigrateApply(ctx);
+        } else if (command === "init") {
+          await runInit(ctx);
+        } else if (command === "pull") {
+          await runPull(ctx);
+        }
+      } catch (err) {
+        if (err instanceof CommandError) {
+          log("error", err.message);
+        } else {
+          log("error", `Error: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      setPhase("done");
+    };
+
+    run();
+  }, [phase, command]);
+
+  // Exit after command completes (for non-interactive mode)
+  useEffect(() => {
+    if (phase === "done" && initialCommand && command !== "help") {
+      const hasError = logs.some((l) => l.type === "error");
+      setTimeout(() => {
+        exit();
+        if (hasError) {
+          process.exitCode = 1;
+        }
+      }, 100);
+    }
+  }, [phase, initialCommand, logs]);
+
+  // Handle exit on 'q' or Escape in interactive mode
+  useInput((input, key) => {
+    if (phase === "done" && !initialCommand) {
+      if (input === "q" || key.escape) {
+        exit();
+      } else if (key.return) {
+        // Reset to command selection
+        setCommand(null);
+        setPhase("select");
+        setLogs([]);
+        setMigrationName(null);
+      }
+    }
+  });
+
+  return (
+    <Box flexDirection="column" paddingY={1}>
+      {phase === "select" && (
+        <>
+          <Box marginBottom={1}>
+            <Text bold color="cyan">zenstack-kit</Text>
+            <Text dimColor> - Select a command</Text>
+          </Box>
+          <SelectInput items={commands} onSelect={handleSelect} />
+        </>
+      )}
+
+      {phase === "input" && command === "migrate:generate" && (
+        <TextInput
+          prompt="Migration name"
+          defaultValue="migration"
+          onSubmit={handleNameSubmit}
+        />
+      )}
+
+      {command === "help" && <HelpDisplay />}
+
+      {logs.map((l, i) => (
+        <Status key={i} type={l.type} message={l.message} />
+      ))}
+
+      {phase === "done" && command !== "help" && !initialCommand && (
+        <Box marginTop={1}>
+          <Text dimColor>Press Enter to continue, 'q' or Escape to exit</Text>
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+// Entry point
+export function runCli() {
+  const { command, options } = parseArgs();
+
+  // Show version
+  if (process.argv.includes("--version") || process.argv.includes("-v")) {
+    console.log("0.1.0");
+    process.exit(0);
+  }
+
+  // Non-interactive help
+  if (process.argv.includes("--help") || process.argv.includes("-h")) {
+    const { waitUntilExit } = render(<HelpDisplay />);
+    waitUntilExit().then(() => process.exit(0));
+    return;
+  }
+
+  const { waitUntilExit } = render(<CliApp initialCommand={command} options={options} />);
+  waitUntilExit();
+}

@@ -19,6 +19,7 @@ export interface SchemaColumn {
   notNull: boolean;
   isArray: boolean;
   default?: string | number | boolean;
+  isAutoincrement?: boolean;
 }
 
 export interface SchemaConstraint {
@@ -100,7 +101,7 @@ function getAttributeArrayRefs(attr: AttributeNode | undefined, name: string): s
 
 function getDefaultValue(
   field: DataField,
-): { hasDefault: boolean; default?: string | number | boolean } {
+): { hasDefault: boolean; default?: string | number | boolean; isAutoincrement?: boolean } {
   const attr = getAttribute(field, "@default");
   if (!attr) {
     return { hasDefault: false };
@@ -123,6 +124,19 @@ function getDefaultValue(
 
   if (expr.$type === "BooleanLiteral") {
     return { hasDefault: true, default: expr.value };
+  }
+
+  // Handle function calls like autoincrement(), now(), etc.
+  if (expr.$type === "InvocationExpr") {
+    const funcName = expr.function.$refText;
+    if (funcName === "autoincrement") {
+      return { hasDefault: true, isAutoincrement: true };
+    }
+    if (funcName === "now") {
+      return { hasDefault: true, default: "now()" };
+    }
+    // Return function name for other functions
+    return { hasDefault: true, default: `${funcName}()` };
   }
 
   return { hasDefault: true };
@@ -253,6 +267,7 @@ function parseModel(model: DataModel): SchemaTable {
       notNull: !field.type.optional,
       isArray: field.type.array ?? false,
       default: defaultInfo.default,
+      isAutoincrement: defaultInfo.isAutoincrement,
     });
   }
 

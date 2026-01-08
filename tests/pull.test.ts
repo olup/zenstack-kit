@@ -15,7 +15,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import Database from "better-sqlite3";
 import * as fs from "fs";
 import * as path from "path";
-import { pullSchema } from "../src/pull.js";
+import { pullSchema } from "../src/schema/pull.js";
 
 const TEST_DB_PATH = path.join(process.cwd(), "tests", "pull-test.db");
 const OUTPUT_PATH = path.join(process.cwd(), "tests", "pull-output.zmodel");

@@ -4,8 +4,8 @@
 
 import * as path from "path";
 import type { MigrationProvider } from "kysely";
-import type { KyselyDialect } from "./kysely-adapter.js";
-import { createKyselyAdapter } from "./kysely-adapter.js";
+import type { KyselyDialect } from "../sql/kysely-adapter.js";
+import { createKyselyAdapter } from "../sql/kysely-adapter.js";
 
 export interface ApplyMigrationsOptions {
   migrationsFolder: string;
