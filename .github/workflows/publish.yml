@@ -1,16 +1,16 @@
-name: Publish to npm
+name: Release and Publish
 
 on:
   push:
     tags:
-      - "v*"
+      - 'v*'
 
 jobs:
-  publish:
+  release:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      id-token: write
+      id-token: write # Indispensable pour l'OIDC
 
     steps:
       - uses: actions/checkout@v4
@@ -21,12 +21,13 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
-          cache: "pnpm"
-          registry-url: "https://registry.npmjs.org"
+          node-version: 24
+          cache: pnpm
+          # IMPORTANT: On ne met PAS de registry-url ici. 
+          # Cela évite que npm ne cherche un secret NPM_TOKEN.
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --no-frozen-lockfile
 
       - name: Run tests
         run: pnpm test
@@ -34,12 +35,26 @@ jobs:
       - name: Build
         run: pnpm build
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
-        with:
-          generate_release_notes: true
+      - name: Verify version before publish
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "Tag $TAG_VERSION does not match package.json $PKG_VERSION"
+            exit 1
+          fi
+          PUBLISHED_VERSION="$(npm view zenstack-trpc version || true)"
+          if [ "$PUBLISHED_VERSION" = "$TAG_VERSION" ]; then
+            echo "Version $TAG_VERSION is already published"
+            exit 1
+          fi
 
       - name: Publish to npm
-        run: pnpm publish --access public --no-git-checks --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm publish --provenance --access public
+          
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          
