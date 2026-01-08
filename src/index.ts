@@ -26,6 +26,7 @@ export { setPromptProvider, type PromptProvider } from "./cli/prompt-provider.js
 export {
   createPrismaMigration,
   applyPrismaMigrations,
+  previewPrismaMigrations,
   hasPrismaSchemaChanges,
   createInitialMigration,
   initializeSnapshot,
@@ -36,16 +37,25 @@ export {
   appendToMigrationLog,
   getMigrationLogPath,
   calculateChecksum,
+  detectPotentialRenames,
   type PrismaMigrationOptions,
   type PrismaMigration,
   type ApplyPrismaMigrationsOptions,
   type ApplyPrismaMigrationsResult,
+  type PreviewPrismaMigrationsResult,
   type CreateInitialMigrationOptions,
   type MigrationLogEntry,
+  type PotentialTableRename,
+  type PotentialColumnRename,
+  type PotentialRenames,
 } from "./migrations/prisma.js";
+
+// High-level programmatic API
+export { migrate, type MigrateOptions, type MigrateResult } from "./migrate.js";
 
 // CLI utilities
 export { defineConfig, type ZenStackKitConfig } from "./config/index.js";
+export { type RenameChoice } from "./cli/prompts.js";
 
 // Kysely integration
 export {

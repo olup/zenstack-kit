@@ -7,17 +7,18 @@ import { render, Box, Text } from "ink";
 import SelectInput from "ink-select-input";
 
 export type InitChoice = "skip" | "reinitialize" | "baseline" | "create_initial";
+export type ConfirmChoice = "yes" | "no";
 
-interface SelectPromptProps {
+interface SelectPromptProps<T extends string> {
   message: string;
-  items: Array<{ label: string; value: InitChoice; description?: string }>;
-  onSelect: (value: InitChoice) => void;
+  items: Array<{ label: string; value: T; description?: string }>;
+  onSelect: (value: T) => void;
 }
 
-function SelectPrompt({ message, items, onSelect }: SelectPromptProps) {
+function SelectPrompt<T extends string>({ message, items, onSelect }: SelectPromptProps<T>) {
   const [selectedIndex, setSelectedIndex] = useState(0);
 
-  const handleSelect = (item: { value: InitChoice }) => {
+  const handleSelect = (item: { value: T }) => {
     onSelect(item.value);
   };
 
@@ -50,7 +51,7 @@ function SelectPrompt({ message, items, onSelect }: SelectPromptProps) {
 export async function promptSnapshotExists(): Promise<InitChoice> {
   return new Promise((resolve) => {
     const { unmount, waitUntilExit } = render(
-      <SelectPrompt
+      <SelectPrompt<InitChoice>
         message="Snapshot already exists. What would you like to do?"
         items={[
           {
@@ -80,7 +81,7 @@ export async function promptSnapshotExists(): Promise<InitChoice> {
 export async function promptFreshInit(): Promise<InitChoice> {
   return new Promise((resolve) => {
     const { unmount, waitUntilExit } = render(
-      <SelectPrompt
+      <SelectPrompt<InitChoice>
         message="No migrations found. What would you like to do?"
         items={[
           {
@@ -92,6 +93,108 @@ export async function promptFreshInit(): Promise<InitChoice> {
             label: "Create initial migration",
             value: "create_initial",
             description: "Create snapshot + initial migration - use when database is empty",
+          },
+        ]}
+        onSelect={(value) => {
+          unmount();
+          resolve(value);
+        }}
+      />
+    );
+    waitUntilExit();
+  });
+}
+
+/**
+ * Prompt user to confirm overwriting existing files during pull
+ */
+export async function promptPullConfirm(existingFiles: string[]): Promise<boolean> {
+  return new Promise((resolve) => {
+    const { unmount, waitUntilExit } = render(
+      <Box flexDirection="column">
+        <Box marginBottom={1}>
+          <Text color="yellow">⚠ </Text>
+          <Text>Existing files will be affected. Continue?</Text>
+        </Box>
+        <SelectPrompt<ConfirmChoice>
+          message=""
+          items={[
+            {
+              label: "No, abort",
+              value: "no",
+              description: "Cancel and keep existing files",
+            },
+            {
+              label: "Yes, continue",
+              value: "yes",
+              description: "Overwrite schema file (migrations will not be deleted)",
+            },
+          ]}
+          onSelect={(value) => {
+            unmount();
+            resolve(value === "yes");
+          }}
+        />
+      </Box>
+    );
+    waitUntilExit();
+  });
+}
+
+export type RenameChoice = "rename" | "delete_create";
+
+/**
+ * Prompt user to disambiguate a potential table rename
+ */
+export async function promptTableRename(from: string, to: string): Promise<RenameChoice> {
+  return new Promise((resolve) => {
+    const { unmount, waitUntilExit } = render(
+      <SelectPrompt<RenameChoice>
+        message={`Table "${from}" was removed and "${to}" was added. Is this a rename?`}
+        items={[
+          {
+            label: `Rename "${from}" to "${to}"`,
+            value: "rename",
+            description: "Preserve data by renaming the table",
+          },
+          {
+            label: `Delete "${from}" and create "${to}"`,
+            value: "delete_create",
+            description: "Drop the old table and create a new one (data will be lost)",
+          },
+        ]}
+        onSelect={(value) => {
+          unmount();
+          resolve(value);
+        }}
+      />
+    );
+    waitUntilExit();
+  });
+}
+
+/**
+ * Prompt user to disambiguate a potential column rename
+ */
+export async function promptColumnRename(
+  table: string,
+  from: string,
+  to: string
+): Promise<RenameChoice> {
+  return new Promise((resolve) => {
+    const { unmount, waitUntilExit } = render(
+      <SelectPrompt<RenameChoice>
+        message={`Column "${from}" was removed and "${to}" was added in table "${table}". Is this a rename?`}
+        items={[
+          {
+            label: `Rename "${from}" to "${to}"`,
+            value: "rename",
+            description: "Preserve data by renaming the column",
+          },
+          {
+            label: `Delete "${from}" and create "${to}"`,
+            value: "delete_create",
+            description: "Drop the old column and create a new one (data will be lost)",
           },
         ]}
         onSelect={(value) => {

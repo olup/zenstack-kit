@@ -454,4 +454,105 @@ model User {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
   });
+
+  it("should preview migrations without applying", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "zenstack-kit-cli-"));
+    const schemaPath = path.join(tempDir, "schema.zmodel");
+    const configPath = path.join(tempDir, "zenstack-kit.config.mjs");
+    const dbPath = path.join(tempDir, "preview-test.db");
+
+    const schema = `datasource db {
+  provider = "sqlite"
+  url      = "file:./test.db"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id   Int    @id @default(autoincrement())
+  name String
+}
+`;
+
+    try {
+      await fs.writeFile(schemaPath, schema, "utf-8");
+      await fs.writeFile(
+        configPath,
+        createConfigFile("./schema.zmodel", { file: dbPath }),
+        "utf-8",
+      );
+
+      // First run init to create the snapshot and initial migration
+      const { ctx: initCtx } = createTestContext(tempDir, { createInitial: true });
+      await runInit(initCtx);
+
+      // Preview migrations (should not apply)
+      const { ctx: previewCtx, logs: previewLogs } = createTestContext(tempDir, { preview: true });
+      await runMigrateApply(previewCtx);
+
+      // Check that preview info was logged
+      expect(previewLogs.some((l) => l.message.includes("Preview mode"))).toBe(true);
+      expect(previewLogs.some((l) => l.message.includes("Pending"))).toBe(true);
+      expect(previewLogs.some((l) => l.message.includes("SQL"))).toBe(true);
+
+      // Verify that table was NOT created (preview mode)
+      const sqlite = new Database(dbPath);
+      const tables = sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
+      sqlite.close();
+
+      // Only _prisma_migrations should exist (created to check status), not user
+      expect(tables.map((t) => t.name)).not.toContain("user");
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should show no pending migrations message in preview mode", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "zenstack-kit-cli-"));
+    const schemaPath = path.join(tempDir, "schema.zmodel");
+    const configPath = path.join(tempDir, "zenstack-kit.config.mjs");
+    const dbPath = path.join(tempDir, "preview-empty-test.db");
+
+    const schema = `datasource db {
+  provider = "sqlite"
+  url      = "file:./test.db"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id   Int    @id @default(autoincrement())
+  name String
+}
+`;
+
+    try {
+      await fs.writeFile(schemaPath, schema, "utf-8");
+      await fs.writeFile(
+        configPath,
+        createConfigFile("./schema.zmodel", { file: dbPath }),
+        "utf-8",
+      );
+
+      // Init and apply migrations
+      const { ctx: initCtx } = createTestContext(tempDir, { createInitial: true });
+      await runInit(initCtx);
+
+      const { ctx: applyCtx } = createTestContext(tempDir);
+      await runMigrateApply(applyCtx);
+
+      // Now preview (should show no pending)
+      const { ctx: previewCtx, logs: previewLogs } = createTestContext(tempDir, { preview: true });
+      await runMigrateApply(previewCtx);
+
+      // Check that "no pending" message was logged
+      expect(previewLogs.some((l) => l.message.includes("No pending migrations"))).toBe(true);
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
 });

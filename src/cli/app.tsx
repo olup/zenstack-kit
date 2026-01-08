@@ -4,8 +4,8 @@
  * zenstack-kit CLI - Database tooling for ZenStack schemas
  *
  * Commands:
- *   migrate:generate  Generate a new SQL migration
- *   migrate:apply     Apply pending migrations
+ *   migrate create    Generate a new SQL migration
+ *   migrate apply     Apply pending migrations
  *   init              Initialize snapshot from existing schema
  *   pull              Introspect database and generate schema
  */
@@ -23,9 +23,15 @@ import {
   type CommandOptions,
   type LogFn,
 } from "./commands.js";
-import { promptSnapshotExists, promptFreshInit } from "./prompts.js";
+import {
+  promptSnapshotExists,
+  promptFreshInit,
+  promptPullConfirm,
+  promptTableRename,
+  promptColumnRename,
+} from "./prompts.js";
 
-type Command = "migrate:generate" | "migrate:apply" | "init" | "pull" | "help" | "exit";
+type Command = "migrate create" | "migrate apply" | "init" | "pull" | "help" | "exit";
 
 interface CommandOption {
   label: string;
@@ -34,8 +40,8 @@ interface CommandOption {
 }
 
 const commands: CommandOption[] = [
-  { label: "migrate:generate", value: "migrate:generate", description: "Generate a new SQL migration file" },
-  { label: "migrate:apply", value: "migrate:apply", description: "Apply pending SQL migrations" },
+  { label: "migrate create", value: "migrate create", description: "Generate a new SQL migration file" },
+  { label: "migrate apply", value: "migrate apply", description: "Apply pending SQL migrations" },
   { label: "init", value: "init", description: "Initialize snapshot from existing schema" },
   { label: "pull", value: "pull", description: "Introspect database and generate schema" },
   { label: "help", value: "help", description: "Show help information" },
@@ -50,7 +56,14 @@ function parseArgs(): { command?: Command; options: CommandOptions } {
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === "migrate:generate" || arg === "migrate:apply" || arg === "init" || arg === "pull" || arg === "help") {
+    // Handle "migrate create" and "migrate apply" subcommands
+    if (arg === "migrate" && args[i + 1] === "create") {
+      command = "migrate create";
+      i++; // Skip the next argument
+    } else if (arg === "migrate" && args[i + 1] === "apply") {
+      command = "migrate apply";
+      i++; // Skip the next argument
+    } else if (arg === "init" || arg === "pull" || arg === "help") {
       command = arg as Command;
     } else if (arg === "--name" || arg === "-n") {
       options.name = args[++i];
@@ -72,6 +85,10 @@ function parseArgs(): { command?: Command; options: CommandOptions } {
       options.baseline = true;
     } else if (arg === "--create-initial") {
       options.createInitial = true;
+    } else if (arg === "--preview") {
+      options.preview = true;
+    } else if (arg === "--force" || arg === "-f") {
+      options.force = true;
     }
   }
 
@@ -127,6 +144,8 @@ function HelpDisplay() {
         <Text dimColor>--url &lt;url&gt;              Database connection URL</Text>
         <Text dimColor>--create-initial         Create initial migration (skip prompt)</Text>
         <Text dimColor>--baseline               Create baseline only (skip prompt)</Text>
+        <Text dimColor>--preview                Preview pending migrations without applying</Text>
+        <Text dimColor>-f, --force              Force operation without confirmation</Text>
       </Box>
     </Box>
   );
@@ -194,7 +213,7 @@ function CliApp({ initialCommand, options }: CliAppProps) {
       return;
     }
     setCommand(item.value);
-    if (item.value === "migrate:generate" && !migrationName) {
+    if (item.value === "migrate create" && !migrationName) {
       setPhase("input");
     } else {
       setPhase("running");
@@ -224,12 +243,21 @@ function CliApp({ initialCommand, options }: CliAppProps) {
           const choice = await promptFreshInit();
           return choice as "baseline" | "create_initial";
         },
+        promptPullConfirm: async (existingFiles: string[]) => {
+          return await promptPullConfirm(existingFiles);
+        },
+        promptTableRename: async (from: string, to: string) => {
+          return await promptTableRename(from, to);
+        },
+        promptColumnRename: async (table: string, from: string, to: string) => {
+          return await promptColumnRename(table, from, to);
+        },
       };
 
       try {
-        if (command === "migrate:generate") {
+        if (command === "migrate create") {
           await runMigrateGenerate(ctx);
-        } else if (command === "migrate:apply") {
+        } else if (command === "migrate apply") {
           await runMigrateApply(ctx);
         } else if (command === "init") {
           await runInit(ctx);
@@ -249,18 +277,22 @@ function CliApp({ initialCommand, options }: CliAppProps) {
     run();
   }, [phase, command]);
 
-  // Exit after command completes (for non-interactive mode)
+  // Exit after command completes (for non-interactive mode, or on error)
   useEffect(() => {
-    if (phase === "done" && initialCommand && command !== "help") {
+    if (phase === "done" && command !== "help") {
       const hasError = logs.some((l) => l.type === "error");
-      setTimeout(() => {
-        exit();
-        if (hasError) {
-          process.exitCode = 1;
-        }
-      }, 100);
+
+      // Always exit on error, or exit in non-interactive mode
+      if (hasError || initialCommand) {
+        setTimeout(() => {
+          if (hasError) {
+            process.exitCode = 1;
+          }
+          exit();
+        }, 100);
+      }
     }
-  }, [phase, initialCommand, logs]);
+  }, [phase, initialCommand, logs, command, exit]);
 
   // Handle exit on 'q' or Escape in interactive mode
   useInput((input, key) => {
@@ -289,7 +321,7 @@ function CliApp({ initialCommand, options }: CliAppProps) {
         </>
       )}
 
-      {phase === "input" && command === "migrate:generate" && (
+      {phase === "input" && command === "migrate create" && (
         <TextInput
           prompt="Migration name"
           defaultValue="migration"
@@ -303,7 +335,7 @@ function CliApp({ initialCommand, options }: CliAppProps) {
         <Status key={i} type={l.type} message={l.message} />
       ))}
 
-      {phase === "done" && command !== "help" && !initialCommand && (
+      {phase === "done" && command !== "help" && !initialCommand && !logs.some((l) => l.type === "error") && (
         <Box marginTop={1}>
           <Text dimColor>Press Enter to continue, 'q' or Escape to exit</Text>
         </Box>
@@ -322,8 +354,8 @@ export function runCli() {
     process.exit(0);
   }
 
-  // Non-interactive help
-  if (process.argv.includes("--help") || process.argv.includes("-h")) {
+  // Show help if no command or --help/-h flag
+  if (!command || process.argv.includes("--help") || process.argv.includes("-h")) {
     const { waitUntilExit } = render(<HelpDisplay />);
     waitUntilExit().then(() => process.exit(0));
     return;

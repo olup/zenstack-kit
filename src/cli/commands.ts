@@ -12,13 +12,16 @@ import { pullSchema } from "../schema/pull.js";
 import {
   createPrismaMigration,
   applyPrismaMigrations,
+  previewPrismaMigrations,
   hasPrismaSchemaChanges,
   hasSnapshot,
   scanMigrationFolders,
   writeMigrationLog,
   initializeSnapshot,
   createInitialMigration,
+  detectPotentialRenames,
 } from "../migrations/prisma.js";
+import type { RenameChoice } from "./prompts.js";
 import type { ZenStackKitConfig } from "../config/index.js";
 
 export type LogFn = (type: "info" | "success" | "error" | "warning", message: string) => void;
@@ -34,6 +37,8 @@ export interface CommandOptions {
   dbSchema?: string;
   baseline?: boolean;
   createInitial?: boolean;
+  preview?: boolean;
+  force?: boolean;
 }
 
 export interface CommandContext {
@@ -42,6 +47,9 @@ export interface CommandContext {
   log: LogFn;
   promptSnapshotExists?: () => Promise<"skip" | "reinitialize">;
   promptFreshInit?: () => Promise<"baseline" | "create_initial">;
+  promptPullConfirm?: (existingFiles: string[]) => Promise<boolean>;
+  promptTableRename?: (from: string, to: string) => Promise<RenameChoice>;
+  promptColumnRename?: (table: string, from: string, to: string) => Promise<RenameChoice>;
 }
 
 export class CommandError extends Error {
@@ -126,6 +134,32 @@ export async function runMigrateGenerate(ctx: CommandContext): Promise<void> {
     return;
   }
 
+  // Detect potential renames and prompt user to disambiguate
+  const potentialRenames = await detectPotentialRenames({ schemaPath, outputPath });
+
+  const renameTables: Array<{ from: string; to: string }> = [];
+  const renameColumns: Array<{ table: string; from: string; to: string }> = [];
+
+  // Prompt for table renames
+  for (const rename of potentialRenames.tables) {
+    if (ctx.promptTableRename) {
+      const choice = await ctx.promptTableRename(rename.from, rename.to);
+      if (choice === "rename") {
+        renameTables.push(rename);
+      }
+    }
+  }
+
+  // Prompt for column renames
+  for (const rename of potentialRenames.columns) {
+    if (ctx.promptColumnRename) {
+      const choice = await ctx.promptColumnRename(rename.table, rename.from, rename.to);
+      if (choice === "rename") {
+        renameColumns.push(rename);
+      }
+    }
+  }
+
   const name = ctx.options.name || "migration";
 
   const migration = await createPrismaMigration({
@@ -133,6 +167,8 @@ export async function runMigrateGenerate(ctx: CommandContext): Promise<void> {
     schemaPath,
     outputPath,
     dialect,
+    renameTables: renameTables.length > 0 ? renameTables : undefined,
+    renameColumns: renameColumns.length > 0 ? renameColumns : undefined,
   });
 
   if (!migration) {
@@ -172,9 +208,37 @@ export async function runMigrateApply(ctx: CommandContext): Promise<void> {
     throw new CommandError("Database connection URL is required for non-sqlite dialects.");
   }
 
-  ctx.log("info", "Applying migrations...");
-
   const databasePath = dialect === "sqlite" ? connectionUrl : undefined;
+
+  // Preview mode - show pending migrations without applying
+  if (ctx.options.preview) {
+    ctx.log("info", "Preview mode - showing pending migrations:");
+
+    const preview = await previewPrismaMigrations({
+      migrationsFolder: outputPath,
+      dialect,
+      connectionUrl,
+      databasePath,
+      migrationsTable,
+      migrationsSchema,
+    });
+
+    if (preview.pending.length === 0) {
+      ctx.log("warning", "No pending migrations");
+      if (preview.alreadyApplied.length > 0) {
+        ctx.log("info", `${preview.alreadyApplied.length} migration(s) already applied`);
+      }
+      return;
+    }
+
+    for (const migration of preview.pending) {
+      ctx.log("info", `Pending: ${migration.name}`);
+      ctx.log("info", `SQL:\n${migration.sql}`);
+    }
+    return;
+  }
+
+  ctx.log("info", "Applying migrations...");
 
   const result = await applyPrismaMigrations({
     migrationsFolder: outputPath,
@@ -301,7 +365,7 @@ export async function runInit(ctx: CommandContext): Promise<void> {
  * pull command
  */
 export async function runPull(ctx: CommandContext): Promise<void> {
-  const { config, dialect } = await resolveConfig(ctx);
+  const { config, dialect, outputPath: migrationsPath } = await resolveConfig(ctx);
 
   const connectionUrl = getConnectionUrl(config, dialect);
 
@@ -309,18 +373,60 @@ export async function runPull(ctx: CommandContext): Promise<void> {
     throw new CommandError("Database connection URL is required for non-sqlite dialects.");
   }
 
-  ctx.log("info", "Pulling schema from database...");
-
   const databasePath = dialect === "sqlite" ? connectionUrl : undefined;
-  const outputPath = ctx.options.output || "./schema.zmodel";
+  const schemaOutputPath = ctx.options.output || config.schema || "./schema.zmodel";
+
+  // Check for existing files that would be affected
+  const existingFiles: string[] = [];
+
+  if (fs.existsSync(schemaOutputPath)) {
+    existingFiles.push(`Schema: ${schemaOutputPath}`);
+  }
+
+  const snapshotExists = await hasSnapshot(migrationsPath);
+  if (snapshotExists) {
+    existingFiles.push(`Snapshot: ${migrationsPath}/meta/_snapshot.json`);
+  }
+
+  const migrations = await scanMigrationFolders(migrationsPath);
+  if (migrations.length > 0) {
+    existingFiles.push(`Migrations: ${migrations.length} migration(s) in ${migrationsPath}`);
+  }
+
+  // If there are existing files and not using --force, ask for confirmation
+  if (existingFiles.length > 0 && !ctx.options.force) {
+    ctx.log("warning", "The following files/directories already exist:");
+    for (const file of existingFiles) {
+      ctx.log("info", `  ${file}`);
+    }
+
+    if (!ctx.promptPullConfirm) {
+      throw new CommandError(
+        "Existing schema/migrations found. Use --force to overwrite, or provide a prompt handler."
+      );
+    }
+
+    const confirmed = await ctx.promptPullConfirm(existingFiles);
+    if (!confirmed) {
+      ctx.log("warning", "Aborted - no changes made");
+      return;
+    }
+  }
+
+  ctx.log("info", "Pulling schema from database...");
 
   const result = await pullSchema({
     dialect,
     connectionUrl,
     databasePath,
-    outputPath,
+    outputPath: schemaOutputPath,
   });
 
   ctx.log("success", `Schema generated: ${result.outputPath}`);
   ctx.log("info", `${result.tableCount} table(s) introspected`);
+
+  // If we have existing migrations, warn about resetting
+  if (snapshotExists || migrations.length > 0) {
+    ctx.log("warning", "You should run 'zenstack-kit init' to reset the snapshot after reviewing the schema.");
+  }
 }

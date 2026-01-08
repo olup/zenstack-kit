@@ -18,6 +18,7 @@ import {
   initializeSnapshot,
   createInitialMigration,
   calculateChecksum,
+  detectPotentialRenames,
 } from "../src/migrations/prisma.js";
 
 const TEST_DIR = path.join(process.cwd(), "tests", "prisma-test");
@@ -1800,4 +1801,425 @@ describe("Prisma migrations - init helpers", () => {
     expect(log.length).toBe(1);
     expect(log[0].name).toBe(migration.folderName);
   });
+});
+
+describe("Prisma migrations - rename detection", () => {
+  beforeAll(() => {
+    cleanup();
+  });
+
+  afterAll(() => {
+    cleanup();
+  });
+
+  beforeEach(() => {
+    if (fs.existsSync(MIGRATIONS_PATH)) {
+      fs.rmSync(MIGRATIONS_PATH, { recursive: true });
+    }
+  });
+
+  it("should detect potential table rename when one table removed and one added", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id Int @id
+      }
+    `);
+
+    // Create initial snapshot
+    await initializeSnapshot({
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+    });
+
+    // Rename table (remove User, add Member)
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model Member {
+        id Int @id
+      }
+    `);
+
+    const renames = await detectPotentialRenames({
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+    });
+
+    expect(renames.tables.length).toBe(1);
+    expect(renames.tables[0].from).toBe("user");
+    expect(renames.tables[0].to).toBe("member");
+    expect(renames.columns.length).toBe(0);
+  });
+
+  it("should detect potential column rename when one column removed and one added in same table", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id    Int    @id
+        email String
+      }
+    `);
+
+    await initializeSnapshot({
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+    });
+
+    // Rename column (remove email, add emailAddress)
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id           Int    @id
+        emailAddress String
+      }
+    `);
+
+    const renames = await detectPotentialRenames({
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+    });
+
+    expect(renames.tables.length).toBe(0);
+    expect(renames.columns.length).toBe(1);
+    expect(renames.columns[0].table).toBe("user");
+    expect(renames.columns[0].from).toBe("email");
+    expect(renames.columns[0].to).toBe("emailAddress");
+  });
+
+  it("should detect multiple column renames in same table", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id        Int    @id
+        firstName String
+        lastName  String
+      }
+    `);
+
+    await initializeSnapshot({
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+    });
+
+    // Rename both columns
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id      Int    @id
+        fname   String
+        lname   String
+      }
+    `);
+
+    const renames = await detectPotentialRenames({
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+    });
+
+    expect(renames.tables.length).toBe(0);
+    expect(renames.columns.length).toBe(2);
+    // First removed pairs with first added (by order)
+    expect(renames.columns[0].from).toBe("firstName");
+    expect(renames.columns[0].to).toBe("fname");
+    expect(renames.columns[1].from).toBe("lastName");
+    expect(renames.columns[1].to).toBe("lname");
+  });
+
+  it("should return empty when no renames detected", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id Int @id
+      }
+    `);
+
+    await initializeSnapshot({
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+    });
+
+    // Add a new column (not a rename)
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id    Int    @id
+        email String
+      }
+    `);
+
+    const renames = await detectPotentialRenames({
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+    });
+
+    expect(renames.tables.length).toBe(0);
+    expect(renames.columns.length).toBe(0);
+  });
+
+  it("should generate rename SQL when renameTables option is provided", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id Int @id
+      }
+    `);
+
+    await initializeSnapshot({
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+    });
+
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model Member {
+        id Int @id
+      }
+    `);
+
+    const migration = await createPrismaMigration({
+      name: "rename_user_to_member",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      renameTables: [{ from: "user", to: "member" }],
+    });
+
+    expect(migration).not.toBeNull();
+    expect(migration!.sql.toLowerCase()).toContain("alter table");
+    expect(migration!.sql.toLowerCase()).toContain("rename to");
+    expect(migration!.sql.toLowerCase()).not.toContain("drop table");
+    expect(migration!.sql.toLowerCase()).not.toContain("create table");
+  });
+
+  it("should generate rename SQL when renameColumns option is provided", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id    Int    @id
+        email String
+      }
+    `);
+
+    await initializeSnapshot({
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+    });
+
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id           Int    @id
+        emailAddress String
+      }
+    `);
+
+    const migration = await createPrismaMigration({
+      name: "rename_email_column",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      renameColumns: [{ table: "user", from: "email", to: "emailAddress" }],
+    });
+
+    expect(migration).not.toBeNull();
+    expect(migration!.sql.toLowerCase()).toContain("alter table");
+    expect(migration!.sql.toLowerCase()).toContain("rename column");
+    expect(migration!.sql.toLowerCase()).not.toContain("drop column");
+    expect(migration!.sql.toLowerCase()).not.toContain("add column");
+  });
+
+  it("should apply table rename migration successfully", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id   Int    @id @default(autoincrement())
+        name String
+      }
+    `);
+
+    // Create initial migration and apply it
+    await createPrismaMigration({
+      name: "init",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    await applyPrismaMigrations({
+      migrationsFolder: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      databasePath: DB_PATH,
+    });
+
+    // Insert test data
+    const db = new Database(DB_PATH);
+    db.prepare("INSERT INTO user (name) VALUES (?)").run("Alice");
+    db.close();
+
+    // Wait for different timestamp
+    await new Promise((r) => setTimeout(r, 1100));
+
+    // Rename table
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model Member {
+        id   Int    @id @default(autoincrement())
+        name String
+      }
+    `);
+
+    await createPrismaMigration({
+      name: "rename_user_to_member",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      renameTables: [{ from: "user", to: "member" }],
+    });
+
+    const result = await applyPrismaMigrations({
+      migrationsFolder: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      databasePath: DB_PATH,
+    });
+
+    expect(result.failed).toBeUndefined();
+    expect(result.applied.length).toBe(1);
+
+    // Verify data was preserved
+    const db2 = new Database(DB_PATH);
+    const rows = db2.prepare("SELECT * FROM member").all() as { id: number; name: string }[];
+    db2.close();
+
+    expect(rows.length).toBe(1);
+    expect(rows[0].name).toBe("Alice");
+  }, 15000);
+
+  it("should apply column rename migration successfully", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id    Int    @id @default(autoincrement())
+        email String
+      }
+    `);
+
+    await createPrismaMigration({
+      name: "init",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    await applyPrismaMigrations({
+      migrationsFolder: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      databasePath: DB_PATH,
+    });
+
+    // Insert test data
+    const db = new Database(DB_PATH);
+    db.prepare("INSERT INTO user (email) VALUES (?)").run("alice@example.com");
+    db.close();
+
+    // Wait for different timestamp
+    await new Promise((r) => setTimeout(r, 1100));
+
+    // Rename column
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id           Int    @id @default(autoincrement())
+        emailAddress String
+      }
+    `);
+
+    await createPrismaMigration({
+      name: "rename_email_column",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      renameColumns: [{ table: "user", from: "email", to: "emailAddress" }],
+    });
+
+    const result = await applyPrismaMigrations({
+      migrationsFolder: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      databasePath: DB_PATH,
+    });
+
+    expect(result.failed).toBeUndefined();
+    expect(result.applied.length).toBe(1);
+
+    // Verify data was preserved
+    const db2 = new Database(DB_PATH);
+    const rows = db2.prepare("SELECT * FROM user").all() as { id: number; emailAddress: string }[];
+    db2.close();
+
+    expect(rows.length).toBe(1);
+    expect(rows[0].emailAddress).toBe("alice@example.com");
+  }, 15000);
 });
