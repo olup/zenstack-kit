@@ -124,6 +124,7 @@ Options:
 - `-m, --migrations <path>` - Migrations directory
 - `--baseline` - Create snapshot only, no migration
 - `--create-initial` - Create snapshot and initial migration
+- `-c, --config <path>` - Path to zenstack-kit config file
 
 ### `zenstack-kit migrate:generate`
 
@@ -138,6 +139,7 @@ Options:
 - `-s, --schema <path>` - Path to ZenStack schema
 - `-m, --migrations <path>` - Migrations directory
 - `--dialect <dialect>` - Database dialect (`sqlite`, `postgres`, `mysql`)
+- `-c, --config <path>` - Path to zenstack-kit config file
 
 ### `zenstack-kit migrate:apply`
 
@@ -153,6 +155,8 @@ Options:
 - `--url <url>` - Database connection URL (overrides config)
 - `--table <name>` - Migrations table name (default: `_prisma_migrations`)
 - `--db-schema <name>` - Database schema for migrations table (PostgreSQL only, default: `public`)
+- `--preview` - Preview pending migrations without applying
+- `-c, --config <path>` - Path to zenstack-kit config file
 
 ### `zenstack-kit pull`
 
@@ -166,6 +170,7 @@ Options:
 - `-o, --output <path>` - Output path for schema (default: `./schema.zmodel`)
 - `--dialect <dialect>` - Database dialect
 - `--url <url>` - Database connection URL
+- `-c, --config <path>` - Path to zenstack-kit config file
 
 Features:
 - Detects tables, columns, and types
@@ -288,6 +293,11 @@ const { db, destroy } = await createKyselyAdapter({
 // Use db for queries...
 await destroy();
 ```
+
+## Experimental
+
+The `introspectSchema` API is experimental and uses a simplified parser. Expect
+limitations with complex schemas.
 
 ## Prisma Compatibility
 

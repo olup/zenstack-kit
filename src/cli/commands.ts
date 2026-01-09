@@ -39,6 +39,7 @@ export interface CommandOptions {
   createInitial?: boolean;
   preview?: boolean;
   force?: boolean;
+  config?: string;
 }
 
 export interface CommandContext {
@@ -71,9 +72,12 @@ export async function resolveConfig(ctx: CommandContext): Promise<{
   outputPath: string;
   dialect: "sqlite" | "postgres" | "mysql";
 }> {
-  const loaded = await loadConfig(ctx.cwd);
+  const loaded = await loadConfig(ctx.cwd, ctx.options.config);
 
   if (!loaded) {
+    if (ctx.options.config) {
+      throw new CommandError(`Config file not found: ${ctx.options.config}`);
+    }
     throw new CommandError("No zenstack-kit config file found.");
   }
 
@@ -199,6 +203,7 @@ export async function runMigrateGenerate(ctx: CommandContext): Promise<void> {
 
   ctx.log("success", `Migration created: ${migration.folderName}/migration.sql`);
   ctx.log("info", `Path: ${migration.folderPath}`);
+  ctx.log("info", "Next: run 'zenstack-kit migrate apply' (or --preview to review SQL).");
 }
 
 /**
@@ -233,7 +238,7 @@ export async function runMigrateApply(ctx: CommandContext): Promise<void> {
 
   // Preview mode - show pending migrations without applying
   if (ctx.options.preview) {
-    ctx.log("info", "Preview mode - showing pending migrations:");
+    ctx.log("info", "Preview mode - no changes will be applied.");
 
     const preview = await previewPrismaMigrations({
       migrationsFolder: outputPath,
@@ -252,8 +257,12 @@ export async function runMigrateApply(ctx: CommandContext): Promise<void> {
       return;
     }
 
+    ctx.log("info", `Pending migrations: ${preview.pending.length}`);
+    if (preview.alreadyApplied.length > 0) {
+      ctx.log("info", `${preview.alreadyApplied.length} migration(s) already applied`);
+    }
     for (const migration of preview.pending) {
-      ctx.log("info", `Pending: ${migration.name}`);
+      ctx.log("info", `Migration: ${migration.name}`);
       ctx.log("info", `SQL:\n${migration.sql}`);
     }
     return;
@@ -467,6 +476,7 @@ export async function runPull(ctx: CommandContext): Promise<void> {
 
   ctx.log("success", `Schema generated: ${result.outputPath}`);
   ctx.log("info", `${result.tableCount} table(s) introspected`);
+  ctx.log("info", "Next: review the schema, then run 'zenstack-kit init' to reset the snapshot.");
 
   // If we have existing migrations, warn about resetting
   if (snapshotExists || migrations.length > 0) {

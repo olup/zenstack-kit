@@ -91,6 +91,8 @@ function parseArgs(): { command?: Command; options: CommandOptions } {
       options.preview = true;
     } else if (arg === "--force" || arg === "-f") {
       options.force = true;
+    } else if (arg === "--config" || arg === "-c") {
+      options.config = args[++i];
     }
   }
 
@@ -148,6 +150,7 @@ function HelpDisplay() {
         <Text dimColor>--baseline               Create baseline only (skip prompt)</Text>
         <Text dimColor>--preview                Preview pending migrations without applying</Text>
         <Text dimColor>-f, --force              Force operation without confirmation</Text>
+        <Text dimColor>-c, --config &lt;path&gt;     Path to zenstack-kit config file</Text>
       </Box>
     </Box>
   );
