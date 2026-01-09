@@ -29,6 +29,8 @@ import {
   promptPullConfirm,
   promptTableRename,
   promptColumnRename,
+  promptMigrationName,
+  promptMigrationConfirm,
 } from "./prompts.js";
 
 type Command = "migrate create" | "migrate apply" | "init" | "pull" | "help" | "exit";
@@ -151,39 +153,6 @@ function HelpDisplay() {
   );
 }
 
-// Text input component for migration name
-function TextInput({
-  prompt,
-  defaultValue,
-  onSubmit
-}: {
-  prompt: string;
-  defaultValue: string;
-  onSubmit: (value: string) => void;
-}) {
-  const [value, setValue] = useState("");
-
-  useInput((input, key) => {
-    if (key.return) {
-      onSubmit(value.trim() || defaultValue);
-    } else if (key.backspace || key.delete) {
-      setValue((prev) => prev.slice(0, -1));
-    } else if (!key.ctrl && !key.meta && input) {
-      setValue((prev) => prev + input);
-    }
-  });
-
-  return (
-    <Box>
-      <Text color="cyan">? </Text>
-      <Text>{prompt} </Text>
-      <Text dimColor>({defaultValue}): </Text>
-      <Text>{value}</Text>
-      <Text color="gray">█</Text>
-    </Box>
-  );
-}
-
 // Main CLI App component
 interface CliAppProps {
   initialCommand?: Command;
@@ -213,16 +182,7 @@ function CliApp({ initialCommand, options }: CliAppProps) {
       return;
     }
     setCommand(item.value);
-    if (item.value === "migrate create" && !migrationName) {
-      setPhase("input");
-    } else {
-      setPhase("running");
-    }
-  };
-
-  // Handle migration name input
-  const handleNameSubmit = (name: string) => {
-    setMigrationName(name);
+    // Always go to running - migration name prompt now happens after disambiguation
     setPhase("running");
   };
 
@@ -251,6 +211,12 @@ function CliApp({ initialCommand, options }: CliAppProps) {
         },
         promptColumnRename: async (table: string, from: string, to: string) => {
           return await promptColumnRename(table, from, to);
+        },
+        promptMigrationName: async (defaultName: string) => {
+          return await promptMigrationName(defaultName);
+        },
+        promptMigrationConfirm: async (migrationPath: string) => {
+          return await promptMigrationConfirm(migrationPath);
         },
       };
 
@@ -319,14 +285,6 @@ function CliApp({ initialCommand, options }: CliAppProps) {
           </Box>
           <SelectInput items={commands} onSelect={handleSelect} />
         </>
-      )}
-
-      {phase === "input" && command === "migrate create" && (
-        <TextInput
-          prompt="Migration name"
-          defaultValue="migration"
-          onSubmit={handleNameSubmit}
-        />
       )}
 
       {command === "help" && <HelpDisplay />}

@@ -144,6 +144,107 @@ export async function promptPullConfirm(existingFiles: string[]): Promise<boolea
 export type RenameChoice = "rename" | "delete_create";
 
 /**
+ * Text input component for prompting user input
+ */
+function TextInputPrompt({
+  message,
+  placeholder,
+  onSubmit,
+}: {
+  message: string;
+  placeholder: string;
+  onSubmit: (value: string) => void;
+}) {
+  const [value, setValue] = React.useState("");
+
+  const handleInput = (input: string, key: { return?: boolean; backspace?: boolean; delete?: boolean; ctrl?: boolean; meta?: boolean }) => {
+    if (key.return) {
+      onSubmit(value.trim() || placeholder);
+    } else if (key.backspace || key.delete) {
+      setValue((prev) => prev.slice(0, -1));
+    } else if (!key.ctrl && !key.meta && input) {
+      setValue((prev) => prev + input);
+    }
+  };
+
+  // Use ink's useInput hook
+  const { useInput } = require("ink");
+  useInput(handleInput);
+
+  return (
+    <Box flexDirection="column">
+      <Box>
+        <Text color="cyan">? </Text>
+        <Text>{message} </Text>
+        <Text dimColor>({placeholder}): </Text>
+        <Text>{value}</Text>
+        <Text color="gray">█</Text>
+      </Box>
+    </Box>
+  );
+}
+
+/**
+ * Prompt user for migration name
+ */
+export async function promptMigrationName(defaultName: string = "migration"): Promise<string> {
+  return new Promise((resolve) => {
+    const { unmount, waitUntilExit } = render(
+      <TextInputPrompt
+        message="Migration name"
+        placeholder={defaultName}
+        onSubmit={(value) => {
+          unmount();
+          resolve(value);
+        }}
+      />
+    );
+    waitUntilExit();
+  });
+}
+
+export type MigrationConfirmChoice = "create" | "cancel";
+
+/**
+ * Prompt user to confirm migration creation
+ */
+export async function promptMigrationConfirm(migrationPath: string): Promise<MigrationConfirmChoice> {
+  return new Promise((resolve) => {
+    const { unmount, waitUntilExit } = render(
+      <Box flexDirection="column">
+        <Box marginBottom={1}>
+          <Text color="cyan">? </Text>
+          <Text>Create migration at:</Text>
+        </Box>
+        <Box marginBottom={1} marginLeft={2}>
+          <Text color="yellow">{migrationPath}</Text>
+        </Box>
+        <SelectPrompt<MigrationConfirmChoice>
+          message=""
+          items={[
+            {
+              label: "Create migration",
+              value: "create",
+              description: "Generate the migration file",
+            },
+            {
+              label: "Cancel",
+              value: "cancel",
+              description: "Abort without creating migration",
+            },
+          ]}
+          onSelect={(value) => {
+            unmount();
+            resolve(value);
+          }}
+        />
+      </Box>
+    );
+    waitUntilExit();
+  });
+}
+
+/**
  * Prompt user to disambiguate a potential table rename
  */
 export async function promptTableRename(from: string, to: string): Promise<RenameChoice> {

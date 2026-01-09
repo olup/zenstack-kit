@@ -21,7 +21,7 @@ import {
   createInitialMigration,
   detectPotentialRenames,
 } from "../migrations/prisma.js";
-import type { RenameChoice } from "./prompts.js";
+import type { RenameChoice, MigrationConfirmChoice } from "./prompts.js";
 import type { ZenStackKitConfig } from "../config/index.js";
 
 export type LogFn = (type: "info" | "success" | "error" | "warning", message: string) => void;
@@ -50,6 +50,8 @@ export interface CommandContext {
   promptPullConfirm?: (existingFiles: string[]) => Promise<boolean>;
   promptTableRename?: (from: string, to: string) => Promise<RenameChoice>;
   promptColumnRename?: (table: string, from: string, to: string) => Promise<RenameChoice>;
+  promptMigrationName?: (defaultName: string) => Promise<string>;
+  promptMigrationConfirm?: (migrationPath: string) => Promise<MigrationConfirmChoice>;
 }
 
 export class CommandError extends Error {
@@ -160,7 +162,25 @@ export async function runMigrateGenerate(ctx: CommandContext): Promise<void> {
     }
   }
 
-  const name = ctx.options.name || "migration";
+  // Prompt for migration name if not provided via flag
+  let name = ctx.options.name;
+  if (!name && ctx.promptMigrationName) {
+    name = await ctx.promptMigrationName("migration");
+  }
+  name = name || "migration";
+
+  // Compute expected migration path for confirmation
+  const safeName = name.replace(/[^a-z0-9]/gi, "_").toLowerCase();
+  const expectedPath = path.join(outputPath, `<timestamp>_${safeName}`, "migration.sql");
+
+  // Prompt for confirmation before creating
+  if (ctx.promptMigrationConfirm) {
+    const confirmChoice = await ctx.promptMigrationConfirm(expectedPath);
+    if (confirmChoice === "cancel") {
+      ctx.log("warning", "Migration creation cancelled");
+      return;
+    }
+  }
 
   const migration = await createPrismaMigration({
     name,
