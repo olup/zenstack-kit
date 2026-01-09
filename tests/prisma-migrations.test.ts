@@ -229,6 +229,58 @@ describe("Prisma migrations - SQL generation", () => {
     expect(migration!.sql).toContain("add column");
     expect(migration!.sql).toContain('"email"');
   });
+
+  it("should include diffs when applying table and column renames", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id   Int    @id @default(autoincrement())
+        name String
+      }
+    `);
+
+    await createPrismaMigration({
+      name: "init",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model Account {
+        id       Int    @id @default(autoincrement())
+        fullName String
+        email    String
+      }
+    `);
+
+    const migration = await createPrismaMigration({
+      name: "rename_user",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      renameTables: [{ from: "user", to: "account" }],
+      renameColumns: [{ table: "user", from: "name", to: "fullName" }],
+    });
+
+    expect(migration).not.toBeNull();
+
+    const sql = migration!.sql.toLowerCase();
+    expect(sql).toContain('alter table "user" rename to "account"');
+    expect(sql).toContain('alter table "account" rename column "name" to "fullname"');
+    expect(sql).toContain('add column "email"');
+    expect(sql).not.toContain('add column "fullname"');
+    expect(sql).not.toContain('drop column "name"');
+  });
 });
 
 describe("Prisma migrations - apply", () => {
@@ -435,6 +487,22 @@ describe("Prisma migrations - apply", () => {
 
     expect(tables.map((t) => t.name)).toContain("custom_migrations");
     expect(tables.map((t) => t.name)).not.toContain("_prisma_migrations");
+  });
+
+  it("should report missing migration files in coherence check", async () => {
+    fs.mkdirSync(MIGRATIONS_PATH, { recursive: true });
+    await writeMigrationLog(MIGRATIONS_PATH, [
+      { name: "20240101000000_init", checksum: "abc123" },
+    ]);
+
+    const result = await applyPrismaMigrations({
+      migrationsFolder: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      databasePath: DB_PATH,
+    });
+
+    expect(result.coherenceErrors?.length).toBeGreaterThan(0);
+    expect(result.coherenceErrors?.[0].type).toBe("missing_from_disk");
   });
 });
 

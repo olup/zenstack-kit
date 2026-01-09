@@ -127,9 +127,10 @@ function normalizeType(dataType: string): { type: string; isArray: boolean } {
 }
 
 function buildDatasourceBlock(dialect: KyselyDialect): string {
+  const provider = dialect === "postgres" ? "postgresql" : dialect;
   return [
     "datasource db {",
-    `  provider = \"${dialect}\"`,
+    `  provider = \"${provider}\"`,
     "  url      = env(\"DATABASE_URL\")",
     "}",
     "",

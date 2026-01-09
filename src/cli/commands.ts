@@ -66,6 +66,7 @@ export class CommandError extends Error {
  */
 export async function resolveConfig(ctx: CommandContext): Promise<{
   config: ZenStackKitConfig;
+  configDir: string;
   schemaPath: string;
   outputPath: string;
   dialect: "sqlite" | "postgres" | "mysql";
@@ -86,7 +87,7 @@ export async function resolveConfig(ctx: CommandContext): Promise<{
   const schemaPath = path.resolve(configDir, relativeSchemaPath);
   const outputPath = path.resolve(configDir, relativeOutputPath);
 
-  return { config, schemaPath, outputPath, dialect };
+  return { config, configDir, schemaPath, outputPath, dialect };
 }
 
 /**
@@ -406,7 +407,7 @@ export async function runInit(ctx: CommandContext): Promise<void> {
  * pull command
  */
 export async function runPull(ctx: CommandContext): Promise<void> {
-  const { config, dialect, outputPath: migrationsPath } = await resolveConfig(ctx);
+  const { config, configDir, dialect, outputPath: migrationsPath } = await resolveConfig(ctx);
 
   const connectionUrl = getConnectionUrl(config, dialect);
 
@@ -415,7 +416,8 @@ export async function runPull(ctx: CommandContext): Promise<void> {
   }
 
   const databasePath = dialect === "sqlite" ? connectionUrl : undefined;
-  const schemaOutputPath = ctx.options.output || config.schema || "./schema.zmodel";
+  const relativeSchemaOutputPath = ctx.options.output || config.schema || "./schema.zmodel";
+  const schemaOutputPath = path.resolve(configDir, relativeSchemaOutputPath);
 
   // Check for existing files that would be affected
   const existingFiles: string[] = [];
