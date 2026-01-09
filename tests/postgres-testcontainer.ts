@@ -3,16 +3,18 @@
  */
 
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { Pool } from "pg";
+import pg from "pg";
+
+type PoolType = InstanceType<typeof pg.Pool>;
 
 export interface PostgresTestContext {
   container: StartedPostgreSqlContainer;
   connectionUrl: string;
-  pool: Pool;
+  pool: PoolType;
 }
 
 let sharedContainer: StartedPostgreSqlContainer | null = null;
-let sharedPool: Pool | null = null;
+let sharedPool: PoolType | null = null;
 let containerRefCount = 0;
 
 /**
@@ -27,7 +29,7 @@ export async function startPostgresContainer(): Promise<PostgresTestContext> {
       .withPassword("test_password")
       .start();
 
-    sharedPool = new Pool({
+    sharedPool = new pg.Pool({
       connectionString: sharedContainer.getConnectionUri(),
     });
   }
@@ -63,7 +65,7 @@ export async function stopPostgresContainer(): Promise<void> {
  * Clean the database by dropping all tables except system tables.
  * Useful between tests to get a clean slate.
  */
-export async function cleanDatabase(pool: Pool): Promise<void> {
+export async function cleanDatabase(pool: PoolType): Promise<void> {
   await pool.query(`
     DO $$
     DECLARE
@@ -87,13 +89,13 @@ export async function cleanDatabase(pool: Pool): Promise<void> {
 /**
  * Create a fresh database for a test by creating a new schema.
  */
-export async function createTestSchema(pool: Pool, schemaName: string): Promise<void> {
+export async function createTestSchema(pool: PoolType, schemaName: string): Promise<void> {
   await pool.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
 }
 
 /**
  * Drop a test schema.
  */
-export async function dropTestSchema(pool: Pool, schemaName: string): Promise<void> {
+export async function dropTestSchema(pool: PoolType, schemaName: string): Promise<void> {
   await pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
 }
