@@ -76,6 +76,18 @@ export interface ApplyPrismaMigrationsResult {
   applied: Array<{ migrationName: string; duration: number }>;
   alreadyApplied: string[];
   failed?: { migrationName: string; error: string };
+  coherenceErrors?: MigrationCoherenceError[];
+}
+
+export interface MigrationCoherenceError {
+  type: "missing_from_log" | "missing_from_db" | "order_mismatch" | "checksum_mismatch";
+  migrationName: string;
+  details: string;
+}
+
+export interface MigrationCoherenceResult {
+  isCoherent: boolean;
+  errors: MigrationCoherenceError[];
 }
 
 export interface PreviewPrismaMigrationsResult {
@@ -857,6 +869,82 @@ export function calculateChecksum(sql: string): string {
 }
 
 /**
+ * Validate that the database's applied migrations are coherent with the migration log.
+ *
+ * Coherence rules:
+ * 1. Every migration applied in the DB must exist in the migration log
+ * 2. Applied migrations must be a prefix of the log (no gaps)
+ * 3. Checksums must match for applied migrations
+ */
+function validateMigrationCoherence(
+  appliedMigrations: Map<string, PrismaMigrationsRow>,
+  migrationLog: MigrationLogEntry[],
+  migrationFolders: string[]
+): MigrationCoherenceResult {
+  const errors: MigrationCoherenceError[] = [];
+
+  // Build a set of log migration names for quick lookup
+  const logMigrationNames = new Set(migrationLog.map((e) => e.name));
+  const logMigrationMap = new Map(migrationLog.map((e) => [e.name, e]));
+
+  // Check 1: Every applied migration must exist in the log
+  for (const [migrationName, row] of appliedMigrations) {
+    if (!logMigrationNames.has(migrationName)) {
+      errors.push({
+        type: "missing_from_log",
+        migrationName,
+        details: `Migration "${migrationName}" exists in database but not in migration log`,
+      });
+    }
+  }
+
+  // If there are migrations missing from the log, return early
+  // (other checks don't make sense if the log is incomplete)
+  if (errors.length > 0) {
+    return { isCoherent: false, errors };
+  }
+
+  // Check 2: Applied migrations should be a continuous prefix of the log
+  // i.e., if migration N is applied, all migrations before N in the log must also be applied
+  let lastAppliedIndex = -1;
+  for (let i = 0; i < migrationLog.length; i++) {
+    const logEntry = migrationLog[i];
+    const isApplied = appliedMigrations.has(logEntry.name);
+
+    if (isApplied) {
+      // Check for gaps: if this is applied, all previous should be applied
+      if (lastAppliedIndex !== i - 1) {
+        // There's a gap - find the missing migrations
+        for (let j = lastAppliedIndex + 1; j < i; j++) {
+          const missing = migrationLog[j];
+          errors.push({
+            type: "order_mismatch",
+            migrationName: missing.name,
+            details: `Migration "${missing.name}" is in the log but not applied, yet later migration "${logEntry.name}" is applied`,
+          });
+        }
+      }
+      lastAppliedIndex = i;
+
+      // Check 3: Checksum validation for applied migrations
+      const dbRow = appliedMigrations.get(logEntry.name)!;
+      if (dbRow.checksum !== logEntry.checksum) {
+        errors.push({
+          type: "checksum_mismatch",
+          migrationName: logEntry.name,
+          details: `Checksum mismatch for "${logEntry.name}": database has ${dbRow.checksum.slice(0, 8)}..., log has ${logEntry.checksum.slice(0, 8)}...`,
+        });
+      }
+    }
+  }
+
+  return {
+    isCoherent: errors.length === 0,
+    errors,
+  };
+}
+
+/**
  * Execute raw SQL using the database driver directly
  * This bypasses Kysely for DDL statements which don't work reliably with sql.raw()
  */
@@ -877,9 +965,17 @@ async function executeRawSql(
   } else if (dialect === "postgres") {
     const { Pool } = await import("pg");
     const pool = new Pool({ connectionString: options.connectionUrl });
+    const client = await pool.connect();
     try {
-      await pool.query(sqlContent);
+      // PostgreSQL supports transactional DDL, so wrap migration in a transaction
+      await client.query("BEGIN");
+      await client.query(sqlContent);
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
     } finally {
+      client.release();
       await pool.end();
     }
   } else if (dialect === "mysql") {
@@ -936,6 +1032,17 @@ export async function applyPrismaMigrations(
       .map((e) => e.name)
       .sort();
 
+    // Read migration log and validate coherence
+    const migrationLog = await readMigrationLog(options.migrationsFolder);
+    const coherence = validateMigrationCoherence(appliedMigrations, migrationLog, migrationFolders);
+    if (!coherence.isCoherent) {
+      return {
+        applied: [],
+        alreadyApplied: [],
+        coherenceErrors: coherence.errors,
+      };
+    }
+
     const result: ApplyPrismaMigrationsResult = {
       applied: [],
       alreadyApplied: [],
@@ -957,8 +1064,7 @@ export async function applyPrismaMigrations(
 
       const checksum = calculateChecksum(sqlContent);
 
-      // Verify checksum against migration log
-      const migrationLog = await readMigrationLog(options.migrationsFolder);
+      // Verify checksum against migration log (migrationLog already read above)
       const logEntry = migrationLog.find((m) => m.name === folderName);
       if (logEntry && logEntry.checksum !== checksum) {
         result.failed = {

@@ -824,4 +824,87 @@ describe("PostgreSQL migrations with testcontainers", () => {
       expect(measurements.rows[0].value).toBeCloseTo(3.14159);
     });
   });
+
+  describe("Transaction support", () => {
+    it("should rollback entire migration on failure", async () => {
+      // Create a valid migration first
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        model User {
+          id   Int    @id @default(autoincrement())
+          name String
+        }
+      `);
+
+      await createInitialMigration({
+        name: "init",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+
+      // Apply the first migration
+      await applyPrismaMigrations({
+        migrationsFolder: MIGRATIONS_PATH,
+        dialect: "postgres",
+        connectionUrl: pgContext.connectionUrl,
+      });
+
+      // Now create a migration with intentional failure (second statement fails)
+      const badMigrationFolder = path.join(MIGRATIONS_PATH, "20990101000000_bad_migration");
+      fs.mkdirSync(badMigrationFolder, { recursive: true });
+
+      // First statement will succeed, second will fail due to syntax error
+      // If not wrapped in a transaction, the first table would remain
+      const badSql = `
+-- Migration: bad_migration
+-- This migration should fail and rollback completely
+
+CREATE TABLE "test_table" (
+  "id" SERIAL PRIMARY KEY,
+  "name" TEXT NOT NULL
+);
+
+-- This will fail - invalid syntax
+CREATE TABLE "another_table" (
+  "id" SERIAL PRIMARY KEY,
+  INVALID SYNTAX HERE
+);
+`;
+      fs.writeFileSync(path.join(badMigrationFolder, "migration.sql"), badSql, "utf-8");
+
+      // Update migration log
+      const logPath = path.join(MIGRATIONS_PATH, "meta", "_migration_log");
+      const existingLog = fs.readFileSync(logPath, "utf-8");
+      const checksum = require("crypto").createHash("sha256").update(badSql).digest("hex");
+      fs.writeFileSync(logPath, existingLog + `20990101000000_bad_migration ${checksum}\n`, "utf-8");
+
+      // Apply migrations - should fail
+      const result = await applyPrismaMigrations({
+        migrationsFolder: MIGRATIONS_PATH,
+        dialect: "postgres",
+        connectionUrl: pgContext.connectionUrl,
+      });
+
+      expect(result.failed).toBeDefined();
+      expect(result.failed?.migrationName).toBe("20990101000000_bad_migration");
+
+      // Verify test_table was NOT created (rolled back)
+      const tables = await pgContext.pool.query(`
+        SELECT table_name FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+      `);
+      const tableNames = tables.rows.map((r: any) => r.table_name);
+
+      // test_table should NOT exist because the entire transaction was rolled back
+      expect(tableNames).not.toContain("test_table");
+
+      // User table from first migration should still exist
+      expect(tableNames).toContain("user");
+    });
+  });
 });

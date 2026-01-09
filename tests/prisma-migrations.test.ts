@@ -1813,6 +1813,9 @@ describe("Prisma migrations - rename detection", () => {
   });
 
   beforeEach(() => {
+    if (fs.existsSync(DB_PATH)) {
+      fs.unlinkSync(DB_PATH);
+    }
     if (fs.existsSync(MIGRATIONS_PATH)) {
       fs.rmSync(MIGRATIONS_PATH, { recursive: true });
     }
@@ -2222,4 +2225,317 @@ describe("Prisma migrations - rename detection", () => {
     expect(rows.length).toBe(1);
     expect(rows[0].emailAddress).toBe("alice@example.com");
   }, 15000);
+});
+
+describe("Prisma migrations - coherence validation", () => {
+  let db: ReturnType<typeof Database> | null = null;
+
+  beforeAll(() => {
+    cleanup();
+    fs.mkdirSync(TEST_DIR, { recursive: true });
+  });
+
+  afterAll(() => {
+    if (db) {
+      db.close();
+      db = null;
+    }
+    cleanup();
+  });
+
+  beforeEach(() => {
+    if (db) {
+      db.close();
+      db = null;
+    }
+    if (fs.existsSync(DB_PATH)) {
+      fs.unlinkSync(DB_PATH);
+    }
+    if (fs.existsSync(MIGRATIONS_PATH)) {
+      fs.rmSync(MIGRATIONS_PATH, { recursive: true });
+    }
+  });
+
+  it("should pass coherence check when database and log are in sync", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id Int @id
+      }
+    `);
+
+    await createPrismaMigration({
+      name: "init",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    // First apply
+    const result1 = await applyPrismaMigrations({
+      migrationsFolder: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      databasePath: DB_PATH,
+    });
+
+    expect(result1.coherenceErrors).toBeUndefined();
+    expect(result1.applied.length).toBe(1);
+
+    // Second apply should also pass coherence (already applied)
+    const result2 = await applyPrismaMigrations({
+      migrationsFolder: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      databasePath: DB_PATH,
+    });
+
+    expect(result2.coherenceErrors).toBeUndefined();
+    expect(result2.alreadyApplied.length).toBe(1);
+  });
+
+  it("should fail when database has migrations not in log", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id Int @id
+      }
+    `);
+
+    const migration = await createPrismaMigration({
+      name: "init",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    // Apply the migration
+    await applyPrismaMigrations({
+      migrationsFolder: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      databasePath: DB_PATH,
+    });
+
+    // Remove the migration from the log file but keep the folder
+    await writeMigrationLog(MIGRATIONS_PATH, []);
+
+    // Try to apply again - should fail coherence
+    const result = await applyPrismaMigrations({
+      migrationsFolder: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      databasePath: DB_PATH,
+    });
+
+    expect(result.coherenceErrors).toBeDefined();
+    expect(result.coherenceErrors!.length).toBe(1);
+    expect(result.coherenceErrors![0].type).toBe("missing_from_log");
+    expect(result.coherenceErrors![0].migrationName).toBe(migration!.folderName);
+    expect(result.coherenceErrors![0].details).toContain("exists in database but not in migration log");
+  });
+
+  it("should fail when migrations are out of order (gap in applied)", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id Int @id
+      }
+    `);
+
+    const migration1 = await createPrismaMigration({
+      name: "first",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    // Wait for different timestamp
+    await new Promise((r) => setTimeout(r, 1100));
+
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id    Int    @id
+        email String
+      }
+    `);
+
+    const migration2 = await createPrismaMigration({
+      name: "second",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    // Wait for different timestamp
+    await new Promise((r) => setTimeout(r, 1100));
+
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id    Int    @id
+        email String
+        name  String
+      }
+    `);
+
+    const migration3 = await createPrismaMigration({
+      name: "third",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    // Apply all migrations
+    await applyPrismaMigrations({
+      migrationsFolder: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      databasePath: DB_PATH,
+    });
+
+    // Now remove the "second" migration record from the database to create a gap
+    db = new Database(DB_PATH);
+    db.prepare("DELETE FROM _prisma_migrations WHERE migration_name = ?").run(migration2!.folderName);
+    db.close();
+    db = null;
+
+    // Try to apply - should detect the gap
+    const result = await applyPrismaMigrations({
+      migrationsFolder: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      databasePath: DB_PATH,
+    });
+
+    expect(result.coherenceErrors).toBeDefined();
+    expect(result.coherenceErrors!.length).toBe(1);
+    expect(result.coherenceErrors![0].type).toBe("order_mismatch");
+    expect(result.coherenceErrors![0].migrationName).toBe(migration2!.folderName);
+    expect(result.coherenceErrors![0].details).toContain("not applied, yet later migration");
+  }, 15000);
+
+  it("should fail when checksum in database differs from log", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id Int @id
+      }
+    `);
+
+    const migration = await createPrismaMigration({
+      name: "init",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    // Apply the migration
+    await applyPrismaMigrations({
+      migrationsFolder: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      databasePath: DB_PATH,
+    });
+
+    // Modify the checksum in the database to simulate drift
+    db = new Database(DB_PATH);
+    db.prepare("UPDATE _prisma_migrations SET checksum = ? WHERE migration_name = ?").run(
+      "0".repeat(64),
+      migration!.folderName
+    );
+    db.close();
+    db = null;
+
+    // Try to apply - should detect checksum mismatch
+    const result = await applyPrismaMigrations({
+      migrationsFolder: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      databasePath: DB_PATH,
+    });
+
+    expect(result.coherenceErrors).toBeDefined();
+    expect(result.coherenceErrors!.length).toBe(1);
+    expect(result.coherenceErrors![0].type).toBe("checksum_mismatch");
+    expect(result.coherenceErrors![0].details).toContain("Checksum mismatch");
+  });
+
+  it("should allow pending migrations at the tip of the log", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id Int @id
+      }
+    `);
+
+    await createPrismaMigration({
+      name: "first",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    // Apply first migration
+    await applyPrismaMigrations({
+      migrationsFolder: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      databasePath: DB_PATH,
+    });
+
+    // Wait for different timestamp
+    await new Promise((r) => setTimeout(r, 1100));
+
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id    Int    @id
+        email String
+      }
+    `);
+
+    // Create second migration but don't apply yet
+    await createPrismaMigration({
+      name: "second",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    // Applying should work - second migration is at the tip (pending)
+    const result = await applyPrismaMigrations({
+      migrationsFolder: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      databasePath: DB_PATH,
+    });
+
+    expect(result.coherenceErrors).toBeUndefined();
+    expect(result.applied.length).toBe(1);
+    expect(result.alreadyApplied.length).toBe(1);
+  }, 10000);
 });

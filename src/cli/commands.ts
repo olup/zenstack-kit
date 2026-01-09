@@ -269,6 +269,27 @@ export async function runMigrateApply(ctx: CommandContext): Promise<void> {
     migrationsSchema,
   });
 
+  // Handle coherence errors
+  if (result.coherenceErrors && result.coherenceErrors.length > 0) {
+    ctx.log("error", "Migration history is inconsistent");
+    ctx.log("error", "");
+    ctx.log("error", "The following issues were found:");
+
+    for (const err of result.coherenceErrors) {
+      ctx.log("error", `  - ${err.details}`);
+    }
+
+    ctx.log("error", "");
+    ctx.log("error", "This can happen when:");
+    ctx.log("error", "  - Migrations were applied manually without using zenstack-kit");
+    ctx.log("error", "  - The migration log file was modified or deleted");
+    ctx.log("error", "  - Different migration histories exist across environments");
+    ctx.log("error", "");
+    ctx.log("error", "To resolve, ensure your migration log matches your database state.");
+
+    throw new CommandError("Migration history is inconsistent");
+  }
+
   if (result.applied.length === 0 && !result.failed) {
     ctx.log("warning", "No pending migrations");
     if (result.alreadyApplied.length > 0) {
