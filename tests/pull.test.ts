@@ -471,8 +471,7 @@ describe("pullSchema", () => {
     });
 
     // Fields with defaults should have @default attribute
-    // Note: SQLite defaults are complex, so we use dbgenerated()
-    expect(result.schema).toContain("@default(dbgenerated())");
+    expect(result.schema).toMatch(/@default\(/);
   });
 
   it("should write schema to specified output path", async () => {

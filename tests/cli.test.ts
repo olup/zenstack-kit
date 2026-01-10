@@ -494,8 +494,9 @@ model User {
 
       // Check that preview info was logged
       expect(previewLogs.some((l) => l.message.includes("Preview mode"))).toBe(true);
-      expect(previewLogs.some((l) => l.message.includes("Pending"))).toBe(true);
-      expect(previewLogs.some((l) => l.message.includes("SQL"))).toBe(true);
+      expect(previewLogs.some((l) => l.message.includes("Pending migrations"))).toBe(true);
+      expect(previewLogs.some((l) => l.message.includes("Migration:"))).toBe(true);
+      expect(previewLogs.some((l) => l.message.includes("statement"))).toBe(true);
 
       // Verify that table was NOT created (preview mode)
       const sqlite = new Database(dbPath);

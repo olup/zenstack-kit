@@ -18,6 +18,8 @@ export interface PullOptions {
   databasePath?: string;
   /** Output path for schema */
   outputPath: string;
+  /** Write the schema to outputPath (default: true) */
+  writeFile?: boolean;
 }
 
 export interface PullResult {
@@ -109,6 +111,8 @@ function normalizeType(dataType: string): { type: string; isArray: boolean } {
   const base = isArray ? lower.slice(0, -2) : lower;
   const normalized = base.replace(/\(.+\)/, "").trim();
 
+  if (normalized.includes("uuid") || normalized.includes("citext")) return { type: "String", isArray };
+  if (normalized.includes("jsonb")) return { type: "Json", isArray };
   if (normalized.includes("bigint")) return { type: "BigInt", isArray };
   if (normalized.includes("int")) return { type: "Int", isArray };
   if (normalized.includes("bool")) return { type: "Boolean", isArray };
@@ -147,10 +151,11 @@ interface BuildModelOptions {
   indexes: IndexInfo[];
   primaryKeys: PrimaryKeyInfo[];
   allTables: Set<string>;
+  columnDefaults: Map<string, string | null>;
 }
 
 function buildModelBlock(options: BuildModelOptions): string {
-  const { table, foreignKeys, indexes, primaryKeys, allTables } = options;
+  const { table, foreignKeys, indexes, primaryKeys, allTables, columnDefaults } = options;
   const modelName = toPascalCase(table.name) || "Model";
   const fieldLines: string[] = [];
 
@@ -190,6 +195,55 @@ function buildModelBlock(options: BuildModelOptions): string {
     }
   }
 
+  const getDefaultExpr = (columnName: string) => columnDefaults.get(columnName);
+  const buildDefaultAttribute = (defaultExpr: string | null, dataType: string): string | null => {
+    if (!defaultExpr) return null;
+    const normalized = defaultExpr.trim();
+    if (!normalized || normalized.toLowerCase() === "null") return null;
+
+    const lower = normalized.toLowerCase();
+    if (lower.includes("nextval(")) return null;
+
+    if (
+      lower === "current_timestamp" ||
+      lower === "current_timestamp()" ||
+      lower === "now()" ||
+      lower.includes("datetime('now") ||
+      lower.includes("now()")
+    ) {
+      return "@default(now())";
+    }
+
+    if (lower.includes("uuid_generate_v4()") || lower.includes("gen_random_uuid()") || lower === "uuid()") {
+      return "@default(uuid())";
+    }
+
+    if (lower === "true" || lower === "false") {
+      return `@default(${lower})`;
+    }
+
+    if ((lower === "0" || lower === "1") && dataType.toLowerCase().includes("bool")) {
+      return `@default(${lower === "1" ? "true" : "false"})`;
+    }
+
+    if (/^-?\d+(\.\d+)?$/.test(normalized)) {
+      return `@default(${normalized})`;
+    }
+
+    if (
+      (normalized.startsWith("'") && normalized.endsWith("'")) ||
+      (normalized.startsWith("\"") && normalized.endsWith("\""))
+    ) {
+      const unquoted = normalized
+        .slice(1, -1)
+        .replace(/''/g, "'")
+        .replace(/\\"/g, "\"");
+      return `@default(${JSON.stringify(unquoted)})`;
+    }
+
+    return "@default(dbgenerated())";
+  };
+
   const sortedColumns = [...table.columns].sort((a, b) => a.name.localeCompare(b.name));
 
   for (const column of sortedColumns) {
@@ -219,7 +273,12 @@ function buildModelBlock(options: BuildModelOptions): string {
     }
 
     if (column.hasDefaultValue && !modifiers.some((m) => m.includes("@default"))) {
-      modifiers.push("@default(dbgenerated())");
+      const attr = buildDefaultAttribute(getDefaultExpr(column.name), column.dataType);
+      if (attr) {
+        modifiers.push(attr);
+      } else {
+        modifiers.push("@default(dbgenerated())");
+      }
     }
 
     const typeSuffix = isArray ? "[]" : "";
@@ -524,6 +583,55 @@ async function extractPrimaryKeys(
   return primaryKeys;
 }
 
+async function extractColumnDefaults(
+  db: Awaited<ReturnType<typeof createKyselyAdapter>>["db"],
+  dialect: KyselyDialect,
+  tableNames: string[]
+): Promise<Map<string, Map<string, string | null>>> {
+  const defaultsByTable = new Map<string, Map<string, string | null>>();
+  const tableSet = new Set(tableNames);
+
+  const setDefault = (table: string, column: string, value: string | null) => {
+    if (!defaultsByTable.has(table)) {
+      defaultsByTable.set(table, new Map());
+    }
+    defaultsByTable.get(table)!.set(column, value);
+  };
+
+  if (dialect === "sqlite") {
+    for (const tableName of tableNames) {
+      const result = await sql<{ name: string; dflt_value: string | null }>`
+        PRAGMA table_info(${sql.raw(`"${tableName}"`)})
+      `.execute(db);
+      for (const row of result.rows) {
+        setDefault(tableName, row.name, row.dflt_value);
+      }
+    }
+  } else if (dialect === "postgres") {
+    const result = await sql<{ table_name: string; column_name: string; column_default: string | null }>`
+      SELECT table_name, column_name, column_default
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+    `.execute(db);
+    for (const row of result.rows) {
+      if (!tableSet.has(row.table_name)) continue;
+      setDefault(row.table_name, row.column_name, row.column_default);
+    }
+  } else if (dialect === "mysql") {
+    const result = await sql<{ TABLE_NAME: string; COLUMN_NAME: string; COLUMN_DEFAULT: string | null }>`
+      SELECT TABLE_NAME, COLUMN_NAME, COLUMN_DEFAULT
+      FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+    `.execute(db);
+    for (const row of result.rows) {
+      if (!tableSet.has(row.TABLE_NAME)) continue;
+      setDefault(row.TABLE_NAME, row.COLUMN_NAME, row.COLUMN_DEFAULT);
+    }
+  }
+
+  return defaultsByTable;
+}
+
 export async function pullSchema(options: PullOptions): Promise<PullResult> {
   const { db, destroy } = await createKyselyAdapter({
     dialect: options.dialect,
@@ -540,6 +648,7 @@ export async function pullSchema(options: PullOptions): Promise<PullResult> {
     const foreignKeys = await extractForeignKeys(db, options.dialect);
     const indexes = await extractIndexes(db, options.dialect, tableNames);
     const primaryKeys = await extractPrimaryKeys(db, options.dialect, tableNames);
+    const columnDefaultsByTable = await extractColumnDefaults(db, options.dialect, tableNames);
 
     const blocks = filtered.map((table) =>
       buildModelBlock({
@@ -548,13 +657,16 @@ export async function pullSchema(options: PullOptions): Promise<PullResult> {
         indexes,
         primaryKeys,
         allTables,
+        columnDefaults: columnDefaultsByTable.get(table.name) ?? new Map(),
       })
     );
 
     const schema = [buildDatasourceBlock(options.dialect), ...blocks].join("\n\n");
 
-    await fs.mkdir(path.dirname(options.outputPath), { recursive: true });
-    await fs.writeFile(options.outputPath, schema.trimEnd() + "\n", "utf-8");
+    if (options.writeFile !== false) {
+      await fs.mkdir(path.dirname(options.outputPath), { recursive: true });
+      await fs.writeFile(options.outputPath, schema.trimEnd() + "\n", "utf-8");
+    }
 
     return {
       outputPath: options.outputPath,

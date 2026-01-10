@@ -170,6 +170,7 @@ Options:
 - `-o, --output <path>` - Output path for schema (default: `./schema.zmodel`)
 - `--dialect <dialect>` - Database dialect
 - `--url <url>` - Database connection URL
+- `--preview` - Preview generated schema and diff without writing files
 - `-c, --config <path>` - Path to zenstack-kit config file
 
 Features:

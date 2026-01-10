@@ -7,6 +7,8 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import * as os from "os";
+import { execFileSync } from "child_process";
 import { loadConfig } from "../config/loader.js";
 import { pullSchema } from "../schema/pull.js";
 import {
@@ -469,6 +471,44 @@ export async function runPull(ctx: CommandContext): Promise<void> {
     }
   }
 
+  if (ctx.options.preview) {
+    ctx.log("info", "Preview mode - no files will be written.");
+
+    const result = await pullSchema({
+      dialect,
+      connectionUrl,
+      databasePath,
+      outputPath: schemaOutputPath,
+      writeFile: false,
+    });
+
+    if (fs.existsSync(schemaOutputPath)) {
+      const diffOutput = await buildSchemaDiff(schemaOutputPath, result.schema);
+      if (diffOutput) {
+        const { text, truncated } = truncateLines(diffOutput, 200);
+        ctx.log("info", `Diff (existing -> generated):\n${text}`);
+        if (truncated) {
+          ctx.log("info", "Diff truncated. Use --output to write and inspect the full schema.");
+        }
+      } else {
+        ctx.log("info", "Diff unavailable; showing generated schema preview.");
+        const { text, truncated } = truncateLines(result.schema, 200);
+        ctx.log("info", `Generated schema:\n${text}`);
+        if (truncated) {
+          ctx.log("info", "Preview truncated. Use --output to write and inspect the full schema.");
+        }
+      }
+    } else {
+      const { text, truncated } = truncateLines(result.schema, 200);
+      ctx.log("info", `Generated schema:\n${text}`);
+      if (truncated) {
+        ctx.log("info", "Preview truncated. Use --output to write and inspect the full schema.");
+      }
+    }
+
+    return;
+  }
+
   ctx.log("info", "Pulling schema from database...");
 
   const result = await pullSchema({
@@ -486,4 +526,38 @@ export async function runPull(ctx: CommandContext): Promise<void> {
   if (snapshotExists || migrations.length > 0) {
     ctx.log("warning", "You should run 'zenstack-kit init' to reset the snapshot after reviewing the schema.");
   }
+}
+
+async function buildSchemaDiff(existingPath: string, nextSchema: string): Promise<string | null> {
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "zenstack-kit-pull-"));
+  const nextPath = path.join(tempDir, "schema.zmodel");
+  try {
+    await fs.promises.writeFile(nextPath, nextSchema, "utf-8");
+    try {
+      return execFileSync(
+        "git",
+        ["diff", "--no-index", "--no-color", "--", existingPath, nextPath],
+        { encoding: "utf-8" }
+      );
+    } catch (error) {
+      const stdout = (error as { stdout?: string | Buffer }).stdout;
+      if (stdout) {
+        return stdout.toString();
+      }
+      return null;
+    }
+  } finally {
+    await fs.promises.rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+function truncateLines(text: string, maxLines: number): { text: string; truncated: boolean } {
+  const lines = text.split("\n");
+  if (lines.length <= maxLines) {
+    return { text, truncated: false };
+  }
+  return {
+    text: lines.slice(0, maxLines).join("\n"),
+    truncated: true,
+  };
 }
