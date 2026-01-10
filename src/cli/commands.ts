@@ -262,9 +262,13 @@ export async function runMigrateApply(ctx: CommandContext): Promise<void> {
       ctx.log("info", `${preview.alreadyApplied.length} migration(s) already applied`);
     }
     for (const migration of preview.pending) {
-      ctx.log("info", `Migration: ${migration.name}`);
-      ctx.log("info", `SQL:\n${migration.sql}`);
+      const statementCount = migration.sql
+        .split(/;(?:\s*\n|\s*$)/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0 && !s.startsWith("--")).length;
+      ctx.log("info", `Migration: ${migration.name} (${statementCount} statement${statementCount === 1 ? "" : "s"})`);
     }
+    ctx.log("info", "Use the migration.sql files to review full SQL.");
     return;
   }
 
