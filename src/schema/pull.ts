@@ -195,7 +195,7 @@ function buildModelBlock(options: BuildModelOptions): string {
     }
   }
 
-  const getDefaultExpr = (columnName: string) => columnDefaults.get(columnName);
+  const getDefaultExpr = (columnName: string) => columnDefaults.get(columnName) ?? null;
   const buildDefaultAttribute = (defaultExpr: string | null, dataType: string): string | null => {
     if (!defaultExpr) return null;
     const normalized = defaultExpr.trim();
