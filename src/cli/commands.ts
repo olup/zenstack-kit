@@ -40,6 +40,7 @@ export interface CommandOptions {
   baseline?: boolean;
   createInitial?: boolean;
   preview?: boolean;
+  markApplied?: boolean;
   force?: boolean;
   config?: string;
 }
@@ -238,6 +239,10 @@ export async function runMigrateApply(ctx: CommandContext): Promise<void> {
 
   const databasePath = dialect === "sqlite" ? connectionUrl : undefined;
 
+  if (ctx.options.preview && ctx.options.markApplied) {
+    throw new CommandError("Cannot use --preview and --mark-applied together.");
+  }
+
   // Preview mode - show pending migrations without applying
   if (ctx.options.preview) {
     ctx.log("info", "Preview mode - no changes will be applied.");
@@ -274,7 +279,11 @@ export async function runMigrateApply(ctx: CommandContext): Promise<void> {
     return;
   }
 
-  ctx.log("info", "Applying migrations...");
+  if (ctx.options.markApplied) {
+    ctx.log("info", "Marking migrations as applied (no SQL will be executed)...");
+  } else {
+    ctx.log("info", "Applying migrations...");
+  }
 
   const result = await applyPrismaMigrations({
     migrationsFolder: outputPath,
@@ -283,6 +292,7 @@ export async function runMigrateApply(ctx: CommandContext): Promise<void> {
     databasePath,
     migrationsTable,
     migrationsSchema,
+    markApplied: ctx.options.markApplied,
   });
 
   // Handle coherence errors
@@ -315,7 +325,8 @@ export async function runMigrateApply(ctx: CommandContext): Promise<void> {
   }
 
   for (const item of result.applied) {
-    ctx.log("success", `Applied: ${item.migrationName} (${item.duration}ms)`);
+    const action = ctx.options.markApplied ? "Marked applied" : "Applied";
+    ctx.log("success", `${action}: ${item.migrationName} (${item.duration}ms)`);
   }
 
   if (result.failed) {

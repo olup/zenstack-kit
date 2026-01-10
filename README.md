@@ -156,6 +156,7 @@ Options:
 - `--table <name>` - Migrations table name (default: `_prisma_migrations`)
 - `--db-schema <name>` - Database schema for migrations table (PostgreSQL only, default: `public`)
 - `--preview` - Preview pending migrations without applying
+- `--mark-applied` - Mark pending migrations as applied without running SQL
 - `-c, --config <path>` - Path to zenstack-kit config file
 
 ### `zenstack-kit pull`

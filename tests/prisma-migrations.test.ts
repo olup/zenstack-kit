@@ -489,6 +489,47 @@ describe("Prisma migrations - apply", () => {
     expect(tables.map((t) => t.name)).not.toContain("_prisma_migrations");
   });
 
+  it("should mark migrations as applied without executing SQL", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id    Int    @id @default(autoincrement())
+        email String
+      }
+    `);
+
+    await createPrismaMigration({
+      name: "init",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    const result = await applyPrismaMigrations({
+      migrationsFolder: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      databasePath: DB_PATH,
+      markApplied: true,
+    });
+
+    expect(result.applied.length).toBe(1);
+    expect(result.failed).toBeUndefined();
+
+    const db = new Database(DB_PATH);
+    const tables = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+      .all() as { name: string }[];
+    const names = tables.map((t) => t.name);
+
+    expect(names).toContain("_prisma_migrations");
+    expect(names).not.toContain("user");
+    db.close();
+  });
+
   it("should report missing migration files in coherence check", async () => {
     fs.mkdirSync(MIGRATIONS_PATH, { recursive: true });
     await writeMigrationLog(MIGRATIONS_PATH, [

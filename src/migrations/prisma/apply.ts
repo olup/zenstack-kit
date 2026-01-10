@@ -19,6 +19,8 @@ export interface ApplyPrismaMigrationsOptions {
   migrationsTable?: string;
   /** Migrations schema (PostgreSQL only, default: public) */
   migrationsSchema?: string;
+  /** Mark migrations as applied without executing SQL */
+  markApplied?: boolean;
 }
 
 export interface ApplyPrismaMigrationsResult {
@@ -407,11 +409,13 @@ export async function applyPrismaMigrations(
       const startTime = Date.now();
 
       try {
-        // Execute the migration SQL using direct driver access
-        await executeRawSql(options.dialect, sqlContent, {
-          connectionUrl: options.connectionUrl,
-          databasePath: options.databasePath,
-        });
+        if (!options.markApplied) {
+          // Execute the migration SQL using direct driver access
+          await executeRawSql(options.dialect, sqlContent, {
+            connectionUrl: options.connectionUrl,
+            databasePath: options.databasePath,
+          });
+        }
 
         // Record the migration (still use Kysely for this since it's simple INSERT)
         await recordMigration(db, migrationsTable, migrationsSchema, options.dialect, folderName, checksum);

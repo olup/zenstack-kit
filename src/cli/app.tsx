@@ -89,6 +89,8 @@ function parseArgs(): { command?: Command; options: CommandOptions } {
       options.createInitial = true;
     } else if (arg === "--preview") {
       options.preview = true;
+    } else if (arg === "--mark-applied") {
+      options.markApplied = true;
     } else if (arg === "--force" || arg === "-f") {
       options.force = true;
     } else if (arg === "--config" || arg === "-c") {
@@ -149,6 +151,7 @@ function HelpDisplay() {
         <Text dimColor>--create-initial         Create initial migration (skip prompt)</Text>
         <Text dimColor>--baseline               Create baseline only (skip prompt)</Text>
         <Text dimColor>--preview                Preview pending migrations without applying</Text>
+        <Text dimColor>--mark-applied           Mark pending migrations as applied without running SQL</Text>
         <Text dimColor>-f, --force              Force operation without confirmation</Text>
         <Text dimColor>-c, --config &lt;path&gt;     Path to zenstack-kit config file</Text>
       </Box>
