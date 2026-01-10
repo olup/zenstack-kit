@@ -79,7 +79,7 @@ The `init` command offers two options:
 ### 4. Generate migrations
 
 ```bash
-zenstack-kit migrate:generate --name add_posts
+zenstack-kit migrate create --name add_posts
 ```
 
 This creates a migration in Prisma format:
@@ -95,7 +95,7 @@ prisma/migrations/
 ### 5. Apply migrations
 
 ```bash
-zenstack-kit migrate:apply
+zenstack-kit migrate apply
 ```
 
 Migrations are tracked in the `_prisma_migrations` table, making them compatible with `prisma migrate deploy`.
@@ -126,12 +126,12 @@ Options:
 - `--create-initial` - Create snapshot and initial migration
 - `-c, --config <path>` - Path to zenstack-kit config file
 
-### `zenstack-kit migrate:generate`
+### `zenstack-kit migrate create`
 
 Generate a new SQL migration from schema changes.
 
 ```bash
-zenstack-kit migrate:generate --name add_users
+zenstack-kit migrate create --name add_users
 ```
 
 Options:
@@ -141,12 +141,12 @@ Options:
 - `--dialect <dialect>` - Database dialect (`sqlite`, `postgres`, `mysql`)
 - `-c, --config <path>` - Path to zenstack-kit config file
 
-### `zenstack-kit migrate:apply`
+### `zenstack-kit migrate apply`
 
 Apply pending migrations to the database.
 
 ```bash
-zenstack-kit migrate:apply
+zenstack-kit migrate apply
 ```
 
 Options:
