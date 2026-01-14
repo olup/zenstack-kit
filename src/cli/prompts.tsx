@@ -3,7 +3,7 @@
  */
 
 import React, { useState } from "react";
-import { render, Box, Text } from "ink";
+import { render, Box, Text, useInput } from "ink";
 import SelectInput from "ink-select-input";
 
 export type InitChoice = "skip" | "reinitialize" | "baseline" | "create_initial";
@@ -167,8 +167,6 @@ function TextInputPrompt({
     }
   };
 
-  // Use ink's useInput hook
-  const { useInput } = require("ink");
   useInput(handleInput);
 
   return (
