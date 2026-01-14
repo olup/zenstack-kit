@@ -102,7 +102,10 @@ Migrations are tracked in the `_prisma_migrations` table, making them compatible
 
 ## CLI Commands
 
-Run `zenstack-kit` without arguments to launch the interactive menu, or run commands directly.
+Run `zenstack-kit` without arguments to launch the interactive menu, or run commands directly. For CI or non-TTY environments, pass `--no-ui` to bypass Ink.
+
+Global options:
+- `--no-ui` - Disable Ink UI (useful for CI/non-TTY)
 
 ### `zenstack-kit init`
 

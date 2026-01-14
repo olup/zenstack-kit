@@ -81,6 +81,8 @@ function parseArgs(): { command?: Command; options: CommandOptions } {
       options.migrations = args[++i];
     } else if (arg === "--migration") {
       options.migration = args[++i];
+    } else if (arg === "--no-ui") {
+      options.noUi = true;
     } else if (arg === "--dialect") {
       options.dialect = args[++i];
     } else if (arg === "--url") {
@@ -157,6 +159,7 @@ function HelpDisplay() {
         <Text dimColor>--dialect &lt;dialect&gt;      Database dialect (sqlite, postgres, mysql)</Text>
         <Text dimColor>--url &lt;url&gt;              Database connection URL</Text>
         <Text dimColor>--migration &lt;name&gt;       Target a single migration (rehash only)</Text>
+        <Text dimColor>--no-ui                   Disable Ink UI (useful for CI/non-TTY)</Text>
         <Text dimColor>--create-initial         Create initial migration (skip prompt)</Text>
         <Text dimColor>--baseline               Create baseline only (skip prompt)</Text>
         <Text dimColor>--preview                Preview pending migrations without applying</Text>
@@ -319,9 +322,80 @@ function CliApp({ initialCommand, options }: CliAppProps) {
   );
 }
 
+function printHelpText() {
+  const lines = [
+    "zenstack-kit",
+    "Database tooling for ZenStack schemas",
+    "",
+    "Commands:",
+    "  migrate create   Generate a new SQL migration file",
+    "  migrate apply    Apply pending SQL migrations",
+    "  migrate rehash   Rebuild migration log checksums",
+    "  init             Initialize snapshot from existing schema",
+    "  pull             Introspect database and generate schema",
+    "  help             Show help information",
+    "",
+    "Options:",
+    "  -s, --schema <path>     Path to ZenStack schema",
+    "  -m, --migrations <path> Migrations directory",
+    "  -n, --name <name>       Migration name",
+    "  --dialect <dialect>     Database dialect (sqlite, postgres, mysql)",
+    "  --url <url>             Database connection URL",
+    "  --migration <name>      Target a single migration (rehash only)",
+    "  --no-ui                 Disable Ink UI (useful for CI/non-TTY)",
+    "  --create-initial        Create initial migration (skip prompt)",
+    "  --baseline              Create baseline only (skip prompt)",
+    "  --preview               Preview pending migrations without applying",
+    "  --mark-applied          Mark pending migrations as applied without running SQL",
+    "  -f, --force             Force operation without confirmation",
+    "  -c, --config <path>     Path to zenstack-kit config file",
+  ];
+  console.log(lines.join("\n"));
+}
+
+async function runCommandDirect(command: Command, options: CommandOptions) {
+  const log: LogFn = (type, message) => {
+    const prefix = type === "error" ? "✗" : type === "success" ? "✓" : type === "warning" ? "⚠" : "ℹ";
+    const line = `${prefix} ${message}`;
+    if (type === "error") {
+      console.error(line);
+    } else {
+      console.log(line);
+    }
+  };
+
+  const ctx: CommandContext = {
+    cwd: process.cwd(),
+    options,
+    log,
+  };
+
+  try {
+    if (command === "migrate create") {
+      await runMigrateGenerate(ctx);
+    } else if (command === "migrate apply") {
+      await runMigrateApply(ctx);
+    } else if (command === "migrate rehash") {
+      await runMigrateRehash(ctx);
+    } else if (command === "init") {
+      await runInit(ctx);
+    } else if (command === "pull") {
+      await runPull(ctx);
+    }
+  } catch (err) {
+    if (err instanceof CommandError) {
+      log("error", err.message);
+    } else {
+      log("error", `Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    process.exitCode = 1;
+  }
+}
+
 // Entry point
 export function runCli() {
   const { command, options } = parseArgs();
+  const isInteractive = Boolean(process.stdout.isTTY) && !options.noUi;
 
   // Show version
   if (process.argv.includes("--version") || process.argv.includes("-v")) {
@@ -331,8 +405,17 @@ export function runCli() {
 
   // Show help if no command or --help/-h flag
   if (!command || process.argv.includes("--help") || process.argv.includes("-h")) {
-    const { waitUntilExit } = render(<HelpDisplay />);
-    waitUntilExit().then(() => process.exit(0));
+    if (isInteractive) {
+      const { waitUntilExit } = render(<HelpDisplay />);
+      waitUntilExit().then(() => process.exit(0));
+    } else {
+      printHelpText();
+    }
+    return;
+  }
+
+  if (!isInteractive) {
+    void runCommandDirect(command, options);
     return;
   }
 

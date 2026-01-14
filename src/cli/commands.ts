@@ -36,6 +36,7 @@ export interface CommandOptions {
   migrations?: string;
   name?: string;
   migration?: string;
+  noUi?: boolean;
   dialect?: string;
   url?: string;
   output?: string;
