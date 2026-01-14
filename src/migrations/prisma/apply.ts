@@ -401,7 +401,8 @@ export async function applyPrismaMigrations(
             `Checksum mismatch for migration ${folderName}.\n` +
             `Expected: ${logEntry.checksum}\n` +
             `Found: ${checksum}\n` +
-            `The migration file may have been modified after generation.`,
+            `The migration file may have been modified after generation.\n` +
+            `If you intended this, run 'zenstack-kit migrate rehash' to rebuild log checksums.`,
         };
         break;
       }

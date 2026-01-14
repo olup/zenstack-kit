@@ -6,6 +6,7 @@
  * Commands:
  *   migrate create    Generate a new SQL migration
  *   migrate apply     Apply pending migrations
+ *   migrate rehash    Rebuild migration log checksums from migration.sql files
  *   init              Initialize snapshot from existing schema
  *   pull              Introspect database and generate schema
  */
@@ -16,6 +17,7 @@ import SelectInput from "ink-select-input";
 import {
   runMigrateGenerate,
   runMigrateApply,
+  runMigrateRehash,
   runInit,
   runPull,
   CommandError,
@@ -33,7 +35,7 @@ import {
   promptMigrationConfirm,
 } from "./prompts.js";
 
-type Command = "migrate create" | "migrate apply" | "init" | "pull" | "help" | "exit";
+type Command = "migrate create" | "migrate apply" | "migrate rehash" | "init" | "pull" | "help" | "exit";
 
 interface CommandOption {
   label: string;
@@ -44,6 +46,7 @@ interface CommandOption {
 const commands: CommandOption[] = [
   { label: "migrate create", value: "migrate create", description: "Generate a new SQL migration file" },
   { label: "migrate apply", value: "migrate apply", description: "Apply pending SQL migrations" },
+  { label: "migrate rehash", value: "migrate rehash", description: "Rebuild migration log checksums" },
   { label: "init", value: "init", description: "Initialize snapshot from existing schema" },
   { label: "pull", value: "pull", description: "Introspect database and generate schema" },
   { label: "help", value: "help", description: "Show help information" },
@@ -58,12 +61,15 @@ function parseArgs(): { command?: Command; options: CommandOptions } {
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    // Handle "migrate create" and "migrate apply" subcommands
+    // Handle "migrate create", "migrate apply", and "migrate rehash" subcommands
     if (arg === "migrate" && args[i + 1] === "create") {
       command = "migrate create";
       i++; // Skip the next argument
     } else if (arg === "migrate" && args[i + 1] === "apply") {
       command = "migrate apply";
+      i++; // Skip the next argument
+    } else if (arg === "migrate" && args[i + 1] === "rehash") {
+      command = "migrate rehash";
       i++; // Skip the next argument
     } else if (arg === "init" || arg === "pull" || arg === "help") {
       command = arg as Command;
@@ -73,6 +79,8 @@ function parseArgs(): { command?: Command; options: CommandOptions } {
       options.schema = args[++i];
     } else if (arg === "--migrations" || arg === "-m") {
       options.migrations = args[++i];
+    } else if (arg === "--migration") {
+      options.migration = args[++i];
     } else if (arg === "--dialect") {
       options.dialect = args[++i];
     } else if (arg === "--url") {
@@ -148,6 +156,7 @@ function HelpDisplay() {
         <Text dimColor>-n, --name &lt;name&gt;        Migration name</Text>
         <Text dimColor>--dialect &lt;dialect&gt;      Database dialect (sqlite, postgres, mysql)</Text>
         <Text dimColor>--url &lt;url&gt;              Database connection URL</Text>
+        <Text dimColor>--migration &lt;name&gt;       Target a single migration (rehash only)</Text>
         <Text dimColor>--create-initial         Create initial migration (skip prompt)</Text>
         <Text dimColor>--baseline               Create baseline only (skip prompt)</Text>
         <Text dimColor>--preview                Preview pending migrations without applying</Text>
@@ -231,6 +240,8 @@ function CliApp({ initialCommand, options }: CliAppProps) {
           await runMigrateGenerate(ctx);
         } else if (command === "migrate apply") {
           await runMigrateApply(ctx);
+        } else if (command === "migrate rehash") {
+          await runMigrateRehash(ctx);
         } else if (command === "init") {
           await runInit(ctx);
         } else if (command === "pull") {

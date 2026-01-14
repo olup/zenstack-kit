@@ -159,6 +159,19 @@ Options:
 - `--mark-applied` - Mark pending migrations as applied without running SQL
 - `-c, --config <path>` - Path to zenstack-kit config file
 
+### `zenstack-kit migrate rehash`
+
+Rebuild the migration log checksums from the `migration.sql` files (useful after manual edits).
+
+```bash
+zenstack-kit migrate rehash
+```
+
+Options:
+- `-m, --migrations <path>` - Migrations directory
+- `--migration <name>` - Rehash a single migration folder
+- `-c, --config <path>` - Path to zenstack-kit config file
+
 ### `zenstack-kit pull`
 
 Introspect an existing database and generate a ZenStack schema.

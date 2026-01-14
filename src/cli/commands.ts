@@ -18,7 +18,10 @@ import {
   hasPrismaSchemaChanges,
   hasSnapshot,
   scanMigrationFolders,
+  readMigrationLog,
   writeMigrationLog,
+  getMigrationLogPath,
+  calculateChecksum,
   initializeSnapshot,
   createInitialMigration,
   detectPotentialRenames,
@@ -32,6 +35,7 @@ export interface CommandOptions {
   schema?: string;
   migrations?: string;
   name?: string;
+  migration?: string;
   dialect?: string;
   url?: string;
   output?: string;
@@ -310,8 +314,10 @@ export async function runMigrateApply(ctx: CommandContext): Promise<void> {
     ctx.log("error", "  - Migrations were applied manually without using zenstack-kit");
     ctx.log("error", "  - The migration log file was modified or deleted");
     ctx.log("error", "  - Different migration histories exist across environments");
+    ctx.log("error", "  - Migration.sql files were edited after being logged");
     ctx.log("error", "");
     ctx.log("error", "To resolve, ensure your migration log matches your database state.");
+    ctx.log("error", "If you edited migration.sql files, run 'zenstack-kit migrate rehash' to rebuild log checksums.");
 
     throw new CommandError("Migration history is inconsistent");
   }
@@ -332,6 +338,59 @@ export async function runMigrateApply(ctx: CommandContext): Promise<void> {
   if (result.failed) {
     throw new CommandError(`Migration failed: ${result.failed.migrationName} - ${result.failed.error}`);
   }
+}
+
+/**
+ * migrate:rehash command
+ */
+export async function runMigrateRehash(ctx: CommandContext): Promise<void> {
+  const { outputPath } = await resolveConfig(ctx);
+
+  const targetMigration = ctx.options.migration;
+  if (targetMigration) {
+    const sqlPath = path.join(outputPath, targetMigration, "migration.sql");
+    if (!fs.existsSync(sqlPath)) {
+      throw new CommandError(`Migration not found: ${targetMigration}`);
+    }
+
+    const sqlContent = await fs.promises.readFile(sqlPath, "utf-8");
+    const checksum = calculateChecksum(sqlContent);
+
+    const entries = await readMigrationLog(outputPath);
+    const existingIndex = entries.findIndex((e) => e.name === targetMigration);
+    if (existingIndex === -1) {
+      entries.push({ name: targetMigration, checksum });
+    } else {
+      entries[existingIndex] = { name: targetMigration, checksum };
+    }
+
+    await writeMigrationLog(outputPath, entries);
+
+    const logPath = getMigrationLogPath(outputPath);
+    ctx.log("success", `Updated checksum for ${targetMigration}`);
+    ctx.log("info", `Log: ${logPath}`);
+    ctx.log(
+      "warning",
+      "If this migration was already applied, make sure the database checksum matches the updated log."
+    );
+    return;
+  }
+
+  const migrations = await scanMigrationFolders(outputPath);
+  if (migrations.length === 0) {
+    ctx.log("warning", "No migrations found.");
+    return;
+  }
+
+  await writeMigrationLog(outputPath, migrations);
+
+  const logPath = getMigrationLogPath(outputPath);
+  ctx.log("success", `Migration log rebuilt with ${migrations.length} migration(s)`);
+  ctx.log("info", `Log: ${logPath}`);
+  ctx.log(
+    "warning",
+    "If these migrations were already applied, make sure the database checksums match the updated log."
+  );
 }
 
 /**

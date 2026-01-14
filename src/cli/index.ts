@@ -6,6 +6,7 @@
  * Commands:
  *   migrate:generate  Generate a new SQL migration
  *   migrate:apply     Apply pending migrations
+ *   migrate:rehash    Rebuild migration log checksums
  *   init              Initialize snapshot from existing schema
  *   pull              Introspect database and generate schema
  */
