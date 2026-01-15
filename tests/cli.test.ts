@@ -19,6 +19,7 @@ import {
   type CommandContext,
   type LogFn,
 } from "../src/cli/commands.js";
+import { runCli } from "../src/cli/app.js";
 
 interface BaseMigrationOptions {
   migrationsFolder?: string;
@@ -555,5 +556,63 @@ model User {
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
+  });
+
+  describe("non-interactive CLI", () => {
+    it("should run init --baseline with --no-ui", async () => {
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "zenstack-kit-no-ui-"));
+      const originalArgv = process.argv;
+      const originalCwd = process.cwd();
+      const originalExitCode = process.exitCode;
+
+      try {
+        const schemaPath = path.join(tempDir, "schema.zmodel");
+        const configPath = path.join(tempDir, "zenstack-kit.config.mjs");
+        const migrationsPath = path.join(tempDir, "migrations");
+        const snapshotPath = path.join(migrationsPath, "meta", "_snapshot.json");
+
+        await fs.writeFile(
+          schemaPath,
+          `datasource db {
+  provider = "sqlite"
+  url      = "file:./test.db"
+}
+
+model User {
+  id Int @id
+}
+`,
+          "utf-8",
+        );
+
+        await fs.writeFile(configPath, createConfigFile("./schema.zmodel"), "utf-8");
+
+        process.chdir(tempDir);
+        process.argv = ["node", "zenstack-kit", "init", "--baseline", "--no-ui"];
+        process.exitCode = undefined;
+
+        runCli();
+
+        const start = Date.now();
+        while (true) {
+          try {
+            await fs.access(snapshotPath);
+            break;
+          } catch {
+            if (Date.now() - start > 2000) {
+              throw new Error("Timed out waiting for snapshot to be created");
+            }
+            await new Promise((r) => setTimeout(r, 50));
+          }
+        }
+
+        expect(process.exitCode).not.toBe(1);
+      } finally {
+        process.argv = originalArgv;
+        process.chdir(originalCwd);
+        process.exitCode = originalExitCode;
+        await fs.rm(tempDir, { recursive: true, force: true });
+      }
+    });
   });
 });
