@@ -92,7 +92,7 @@ export async function scanMigrationFolders(outputPath: string): Promise<Migratio
   try {
     const dirEntries = await fs.readdir(outputPath, { withFileTypes: true });
     const migrationFolders = dirEntries
-      .filter((e) => e.isDirectory() && /^\d{14}_/.test(e.name))
+      .filter((e) => e.isDirectory() && /^\d{14}(?:_.+)?$/.test(e.name))
       .map((e) => e.name)
       .sort();
 

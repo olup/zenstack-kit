@@ -1675,6 +1675,18 @@ describe("Prisma migrations - migration log", () => {
     expect(scanned[0].name).toContain("init");
     expect(scanned[0].checksum.length).toBe(64);
   });
+
+  it("should scan migration folders without a name suffix", async () => {
+    const folderName = "20251209100758";
+    const folderPath = path.join(MIGRATIONS_PATH, folderName);
+    fs.mkdirSync(folderPath, { recursive: true });
+
+    const sqlContent = "create table test (id integer);";
+    fs.writeFileSync(path.join(folderPath, "migration.sql"), sqlContent, "utf-8");
+
+    const scanned = await scanMigrationFolders(MIGRATIONS_PATH);
+    expect(scanned).toEqual([{ name: folderName, checksum: calculateChecksum(sqlContent) }]);
+  });
 });
 
 describe("Prisma migrations - checksum verification", () => {

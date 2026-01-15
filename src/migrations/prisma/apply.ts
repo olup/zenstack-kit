@@ -341,7 +341,7 @@ export async function applyPrismaMigrations(
     // Read migration folders
     const entries = await fs.readdir(options.migrationsFolder, { withFileTypes: true });
     const migrationFolders = entries
-      .filter((e) => e.isDirectory() && /^\d{14}_/.test(e.name))
+      .filter((e) => e.isDirectory() && /^\d{14}(?:_.+)?$/.test(e.name))
       .map((e) => e.name)
       .sort();
 
@@ -470,7 +470,7 @@ export async function previewPrismaMigrations(
     // Read migration folders
     const entries = await fs.readdir(options.migrationsFolder, { withFileTypes: true });
     const migrationFolders = entries
-      .filter((e) => e.isDirectory() && /^\d{14}_/.test(e.name))
+      .filter((e) => e.isDirectory() && /^\d{14}(?:_.+)?$/.test(e.name))
       .map((e) => e.name)
       .sort();
 
