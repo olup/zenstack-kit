@@ -77,7 +77,7 @@ describe("Prisma migrations - SQL generation", () => {
     expect(migration).not.toBeNull();
     expect(migration!.folderName).toMatch(/^\d{14}_init$/);
     expect(migration!.sql).toContain("create table");
-    expect(migration!.sql).toContain('"user"');
+    expect(migration!.sql).toContain('"User"');
 
     // Check file was created
     const sqlPath = path.join(migration!.folderPath, "migration.sql");
@@ -112,7 +112,7 @@ describe("Prisma migrations - SQL generation", () => {
     expect(migration).not.toBeNull();
     // PostgreSQL uses serial for autoincrement
     expect(migration!.sql).toContain("create table");
-    expect(migration!.sql).toContain('"post"');
+    expect(migration!.sql).toContain('"Post"');
   });
 
   it("should detect no changes when schema unchanged", async () => {
@@ -268,8 +268,8 @@ describe("Prisma migrations - SQL generation", () => {
       schemaPath: SCHEMA_PATH,
       outputPath: MIGRATIONS_PATH,
       dialect: "sqlite",
-      renameTables: [{ from: "user", to: "account" }],
-      renameColumns: [{ table: "user", from: "name", to: "fullName" }],
+      renameTables: [{ from: "User", to: "Account" }],
+      renameColumns: [{ table: "User", from: "name", to: "fullName" }],
     });
 
     expect(migration).not.toBeNull();
@@ -356,7 +356,7 @@ describe("Prisma migrations - apply", () => {
 
     console.log("Tables:", tables);
 
-    expect(tables.map((t) => t.name)).toContain("user");
+    expect(tables.map((t) => t.name)).toContain("User");
     expect(tables.map((t) => t.name)).toContain("_prisma_migrations");
   });
 
@@ -450,7 +450,7 @@ describe("Prisma migrations - apply", () => {
 
     // Verify schema
     db = new Database(DB_PATH);
-    const columns = db.prepare("PRAGMA table_info(user)").all() as { name: string }[];
+    const columns = db.prepare("PRAGMA table_info(User)").all() as { name: string }[];
     expect(columns.map((c) => c.name)).toContain("email");
   });
 
@@ -526,7 +526,7 @@ describe("Prisma migrations - apply", () => {
     const names = tables.map((t) => t.name);
 
     expect(names).toContain("_prisma_migrations");
-    expect(names).not.toContain("user");
+    expect(names).not.toContain("User");
     db.close();
   });
 
@@ -987,8 +987,8 @@ describe("Prisma migrations - snapshot file structure", () => {
     expect(snapshot.schema.tables.length).toBe(2);
 
     const tableNames = snapshot.schema.tables.map((t: any) => t.name);
-    expect(tableNames).toContain("user");
-    expect(tableNames).toContain("post");
+    expect(tableNames).toContain("User");
+    expect(tableNames).toContain("Post");
   });
 
   it("should include column details in snapshot", async () => {
@@ -1016,7 +1016,7 @@ describe("Prisma migrations - snapshot file structure", () => {
     const snapshotPath = path.join(MIGRATIONS_PATH, "meta", "_snapshot.json");
     const snapshot = JSON.parse(fs.readFileSync(snapshotPath, "utf-8"));
 
-    const userTable = snapshot.schema.tables.find((t: any) => t.name === "user");
+    const userTable = snapshot.schema.tables.find((t: any) => t.name === "User");
     expect(userTable).toBeDefined();
     expect(userTable.columns).toBeDefined();
     expect(Array.isArray(userTable.columns)).toBe(true);
@@ -1061,7 +1061,7 @@ describe("Prisma migrations - snapshot file structure", () => {
     const snapshotPath = path.join(MIGRATIONS_PATH, "meta", "_snapshot.json");
     const snapshot = JSON.parse(fs.readFileSync(snapshotPath, "utf-8"));
 
-    const userTable = snapshot.schema.tables.find((t: any) => t.name === "user");
+    const userTable = snapshot.schema.tables.find((t: any) => t.name === "User");
 
     // Check primary key
     expect(userTable.primaryKey).toBeDefined();
@@ -1097,7 +1097,7 @@ describe("Prisma migrations - snapshot file structure", () => {
 
     const snapshotPath = path.join(MIGRATIONS_PATH, "meta", "_snapshot.json");
     const snapshot1 = JSON.parse(fs.readFileSync(snapshotPath, "utf-8"));
-    const userTable1 = snapshot1.schema.tables.find((t: any) => t.name === "user");
+    const userTable1 = snapshot1.schema.tables.find((t: any) => t.name === "User");
     expect(userTable1.columns.length).toBe(1);
 
     // Add a column
@@ -1121,7 +1121,7 @@ describe("Prisma migrations - snapshot file structure", () => {
     });
 
     const snapshot2 = JSON.parse(fs.readFileSync(snapshotPath, "utf-8"));
-    const userTable2 = snapshot2.schema.tables.find((t: any) => t.name === "user");
+    const userTable2 = snapshot2.schema.tables.find((t: any) => t.name === "User");
     expect(userTable2.columns.length).toBe(2);
   });
 });
@@ -1495,10 +1495,10 @@ describe("Prisma migrations - migrations table configuration", () => {
       migrationsTable: "team_b_migrations",
     });
 
-    // The migration will fail because user table already exists
+    // The migration will fail because User table already exists
     // But that's expected - this test verifies that the tracking is isolated
     expect(result2.failed).toBeDefined();
-    expect(result2.failed?.error).toContain("user");
+    expect(result2.failed?.error).toContain("User");
 
     db = new Database(DB_PATH);
     const tables = db
@@ -1958,6 +1958,18 @@ describe("Prisma migrations - targeted apply", () => {
 
     await new Promise((r) => setTimeout(r, 1100));
 
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id    Int @id
+        email String
+      }
+    `);
+
     const second = await createPrismaMigration({
       name: "add_email",
       schemaPath: SCHEMA_PATH,
@@ -2074,8 +2086,8 @@ describe("Prisma migrations - init helpers", () => {
 
     expect(migration.folderName).toMatch(/^\d{14}_init$/);
     expect(migration.sql).toContain("create table");
-    expect(migration.sql).toContain('"user"');
-    expect(migration.sql).toContain('"post"');
+    expect(migration.sql).toContain('"User"');
+    expect(migration.sql).toContain('"Post"');
 
     // Should also create snapshot and migration log
     expect(await hasSnapshot(MIGRATIONS_PATH)).toBe(true);
@@ -2139,8 +2151,8 @@ describe("Prisma migrations - rename detection", () => {
     });
 
     expect(renames.tables.length).toBe(1);
-    expect(renames.tables[0].from).toBe("user");
-    expect(renames.tables[0].to).toBe("member");
+    expect(renames.tables[0].from).toBe("User");
+    expect(renames.tables[0].to).toBe("Member");
     expect(renames.columns.length).toBe(0);
   });
 
@@ -2182,7 +2194,7 @@ describe("Prisma migrations - rename detection", () => {
 
     expect(renames.tables.length).toBe(0);
     expect(renames.columns.length).toBe(1);
-    expect(renames.columns[0].table).toBe("user");
+    expect(renames.columns[0].table).toBe("User");
     expect(renames.columns[0].from).toBe("email");
     expect(renames.columns[0].to).toBe("emailAddress");
   });
@@ -2306,7 +2318,7 @@ describe("Prisma migrations - rename detection", () => {
       schemaPath: SCHEMA_PATH,
       outputPath: MIGRATIONS_PATH,
       dialect: "sqlite",
-      renameTables: [{ from: "user", to: "member" }],
+      renameTables: [{ from: "User", to: "Member" }],
     });
 
     expect(migration).not.toBeNull();
@@ -2351,7 +2363,7 @@ describe("Prisma migrations - rename detection", () => {
       schemaPath: SCHEMA_PATH,
       outputPath: MIGRATIONS_PATH,
       dialect: "sqlite",
-      renameColumns: [{ table: "user", from: "email", to: "emailAddress" }],
+      renameColumns: [{ table: "User", from: "email", to: "emailAddress" }],
     });
 
     expect(migration).not.toBeNull();
@@ -2390,7 +2402,7 @@ describe("Prisma migrations - rename detection", () => {
 
     // Insert test data
     const db = new Database(DB_PATH);
-    db.prepare("INSERT INTO user (name) VALUES (?)").run("Alice");
+    db.prepare("INSERT INTO User (name) VALUES (?)").run("Alice");
     db.close();
 
     // Wait for different timestamp
@@ -2414,7 +2426,7 @@ describe("Prisma migrations - rename detection", () => {
       schemaPath: SCHEMA_PATH,
       outputPath: MIGRATIONS_PATH,
       dialect: "sqlite",
-      renameTables: [{ from: "user", to: "member" }],
+      renameTables: [{ from: "User", to: "Member" }],
     });
 
     const result = await applyPrismaMigrations({
@@ -2428,7 +2440,7 @@ describe("Prisma migrations - rename detection", () => {
 
     // Verify data was preserved
     const db2 = new Database(DB_PATH);
-    const rows = db2.prepare("SELECT * FROM member").all() as { id: number; name: string }[];
+    const rows = db2.prepare("SELECT * FROM Member").all() as { id: number; name: string }[];
     db2.close();
 
     expect(rows.length).toBe(1);
@@ -2463,7 +2475,7 @@ describe("Prisma migrations - rename detection", () => {
 
     // Insert test data
     const db = new Database(DB_PATH);
-    db.prepare("INSERT INTO user (email) VALUES (?)").run("alice@example.com");
+    db.prepare("INSERT INTO User (email) VALUES (?)").run("alice@example.com");
     db.close();
 
     // Wait for different timestamp
@@ -2487,7 +2499,7 @@ describe("Prisma migrations - rename detection", () => {
       schemaPath: SCHEMA_PATH,
       outputPath: MIGRATIONS_PATH,
       dialect: "sqlite",
-      renameColumns: [{ table: "user", from: "email", to: "emailAddress" }],
+      renameColumns: [{ table: "User", from: "email", to: "emailAddress" }],
     });
 
     const result = await applyPrismaMigrations({
@@ -2501,7 +2513,7 @@ describe("Prisma migrations - rename detection", () => {
 
     // Verify data was preserved
     const db2 = new Database(DB_PATH);
-    const rows = db2.prepare("SELECT * FROM user").all() as { id: number; emailAddress: string }[];
+    const rows = db2.prepare("SELECT * FROM User").all() as { id: number; emailAddress: string }[];
     db2.close();
 
     expect(rows.length).toBe(1);

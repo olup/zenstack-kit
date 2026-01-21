@@ -101,7 +101,7 @@ async function parseZModelFile(schemaPath: string): Promise<SchemaInfo> {
 
     models.push({
       name: modelName,
-      tableName: modelName.toLowerCase(),
+      tableName: modelName,
       fields,
     });
   }

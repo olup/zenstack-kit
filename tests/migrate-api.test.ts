@@ -99,7 +99,7 @@ describe("migrate() programmatic API", () => {
       .all() as { name: string }[];
     db.close();
 
-    expect(tables.map((t) => t.name)).toContain("user");
+    expect(tables.map((t) => t.name)).toContain("User");
   });
 
   it("should apply migrations using config file", async () => {
@@ -139,7 +139,7 @@ describe("migrate() programmatic API", () => {
       .all() as { name: string }[];
     db.close();
 
-    expect(tables.map((t) => t.name)).toContain("post");
+    expect(tables.map((t) => t.name)).toContain("Post");
   });
 
   it("should preview migrations without applying", async () => {
@@ -186,7 +186,7 @@ describe("migrate() programmatic API", () => {
     db.close();
 
     // Only migrations table should exist (created by preview to check status)
-    expect(tables.map((t) => t.name)).not.toContain("comment");
+    expect(tables.map((t) => t.name)).not.toContain("Comment");
   });
 
   it("should return already applied migrations", async () => {
@@ -407,7 +407,7 @@ describe("previewPrismaMigrations()", () => {
 
     expect(preview.pending.length).toBe(1);
     expect(preview.pending[0].sql).toContain("create table");
-    expect(preview.pending[0].sql).toContain('"product"');
+    expect(preview.pending[0].sql).toContain('"Product"');
     expect(preview.pending[0].sql).toContain('"name"');
     expect(preview.pending[0].sql).toContain('"price"');
   });

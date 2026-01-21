@@ -145,7 +145,7 @@ function getDefaultValue(
 function getTableName(model: DataModel): string {
   const mapAttr = getAttribute(model, "@@map");
   const mapped = getAttributeStringArg(mapAttr, ["name", "map"]);
-  return mapped ?? model.name.toLowerCase();
+  return mapped ?? model.name;
 }
 
 function getColumnName(field: DataField): string {

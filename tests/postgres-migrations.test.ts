@@ -86,7 +86,7 @@ describe("PostgreSQL migrations with testcontainers", () => {
 
       expect(migration).not.toBeNull();
       expect(migration!.sql).toContain("create table");
-      expect(migration!.sql).toContain('"user"');
+      expect(migration!.sql).toContain('"User"');
 
       // Apply migration
       const result = await applyPrismaMigrations({
@@ -104,7 +104,7 @@ describe("PostgreSQL migrations with testcontainers", () => {
         WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
       `);
       const tableNames = tables.rows.map((r: any) => r.table_name);
-      expect(tableNames).toContain("user");
+      expect(tableNames).toContain("User");
       expect(tableNames).toContain("_prisma_migrations");
     });
 
@@ -161,7 +161,7 @@ describe("PostgreSQL migrations with testcontainers", () => {
       // Verify column exists
       const columns = await pgContext.pool.query(`
         SELECT column_name FROM information_schema.columns
-        WHERE table_schema = 'public' AND table_name = 'user'
+        WHERE table_schema = 'public' AND table_name = 'User'
       `);
       const columnNames = columns.rows.map((r: any) => r.column_name);
       expect(columnNames).toContain("email");
@@ -213,7 +213,7 @@ describe("PostgreSQL migrations with testcontainers", () => {
       const columns = await pgContext.pool.query(`
         SELECT column_name, data_type, udt_name
         FROM information_schema.columns
-        WHERE table_schema = 'public' AND table_name = 'user'
+        WHERE table_schema = 'public' AND table_name = 'User'
       `);
 
       const roleColumn = columns.rows.find((r: any) => r.column_name === "role");
@@ -222,9 +222,9 @@ describe("PostgreSQL migrations with testcontainers", () => {
 
       // Insert and query to verify it works
       await pgContext.pool.query(`
-        INSERT INTO "user" (name, role) VALUES ('Test User', 'ADMIN')
+        INSERT INTO "User" (name, role) VALUES ('Test User', 'ADMIN')
       `);
-      const users = await pgContext.pool.query(`SELECT * FROM "user"`);
+      const users = await pgContext.pool.query(`SELECT * FROM "User"`);
       expect(users.rows.length).toBe(1);
       expect(users.rows[0].role).toBe("ADMIN");
     });
@@ -275,9 +275,9 @@ describe("PostgreSQL migrations with testcontainers", () => {
 
       // Insert and verify
       await pgContext.pool.query(`
-        INSERT INTO "user" (role, status) VALUES ('ADMIN', 'ACTIVE')
+        INSERT INTO "User" (role, status) VALUES ('ADMIN', 'ACTIVE')
       `);
-      const users = await pgContext.pool.query(`SELECT * FROM "user"`);
+      const users = await pgContext.pool.query(`SELECT * FROM "User"`);
       expect(users.rows[0].role).toBe("ADMIN");
       expect(users.rows[0].status).toBe("ACTIVE");
     });
@@ -319,9 +319,9 @@ describe("PostgreSQL migrations with testcontainers", () => {
 
       // Verify JSON column works
       await pgContext.pool.query(`
-        INSERT INTO "user" (name, metadata) VALUES ('Test', '{"key": "value", "nested": {"a": 1}}')
+        INSERT INTO "User" (name, metadata) VALUES ('Test', '{"key": "value", "nested": {"a": 1}}')
       `);
-      const users = await pgContext.pool.query(`SELECT * FROM "user"`);
+      const users = await pgContext.pool.query(`SELECT * FROM "User"`);
       expect(users.rows[0].metadata).toEqual({ key: "value", nested: { a: 1 } });
     });
 
@@ -360,7 +360,7 @@ describe("PostgreSQL migrations with testcontainers", () => {
       const columns = await pgContext.pool.query(`
         SELECT column_name, is_nullable, data_type
         FROM information_schema.columns
-        WHERE table_schema = 'public' AND table_name = 'config'
+        WHERE table_schema = 'public' AND table_name = 'Config'
       `);
 
       const settingsColumn = columns.rows.find((r: any) => r.column_name === "settings");
@@ -405,9 +405,9 @@ describe("PostgreSQL migrations with testcontainers", () => {
 
       // Verify array works
       await pgContext.pool.query(`
-        INSERT INTO "user" (name, tags) VALUES ('Test', ARRAY['tag1', 'tag2', 'tag3'])
+        INSERT INTO "User" (name, tags) VALUES ('Test', ARRAY['tag1', 'tag2', 'tag3'])
       `);
-      const users = await pgContext.pool.query(`SELECT * FROM "user"`);
+      const users = await pgContext.pool.query(`SELECT * FROM "User"`);
       expect(users.rows[0].tags).toEqual(["tag1", "tag2", "tag3"]);
     });
 
@@ -445,9 +445,9 @@ describe("PostgreSQL migrations with testcontainers", () => {
 
       // Verify array works
       await pgContext.pool.query(`
-        INSERT INTO "user" (scores) VALUES (ARRAY[10, 20, 30])
+        INSERT INTO "User" (scores) VALUES (ARRAY[10, 20, 30])
       `);
-      const users = await pgContext.pool.query(`SELECT * FROM "user"`);
+      const users = await pgContext.pool.query(`SELECT * FROM "User"`);
       expect(users.rows[0].scores).toEqual([10, 20, 30]);
     });
 
@@ -493,9 +493,9 @@ describe("PostgreSQL migrations with testcontainers", () => {
 
       // Verify array works
       await pgContext.pool.query(`
-        INSERT INTO "user" (name, permissions) VALUES ('Admin', ARRAY['READ', 'WRITE', 'ADMIN']::text[])
+        INSERT INTO "User" (name, permissions) VALUES ('Admin', ARRAY['READ', 'WRITE', 'ADMIN']::text[])
       `);
-      const users = await pgContext.pool.query(`SELECT * FROM "user"`);
+      const users = await pgContext.pool.query(`SELECT * FROM "User"`);
       expect(users.rows[0].permissions).toEqual(["READ", "WRITE", "ADMIN"]);
     });
   });
@@ -569,28 +569,28 @@ describe("PostgreSQL migrations with testcontainers", () => {
         WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
       `);
       const tableNames = tables.rows.map((r: any) => r.table_name);
-      expect(tableNames).toContain("user");
-      expect(tableNames).toContain("post");
+      expect(tableNames).toContain("User");
+      expect(tableNames).toContain("Post");
 
       // Insert test data
       await pgContext.pool.query(`
-        INSERT INTO "user" (email, name, role, tags, preferences)
+        INSERT INTO "User" (email, name, role, tags, preferences)
         VALUES ('test@example.com', 'Test User', 'ADMIN', ARRAY['developer', 'writer'], '{"theme": "dark"}')
       `);
 
       await pgContext.pool.query(`
-        INSERT INTO "post" (title, content, status, metadata, tags, "authorId")
+        INSERT INTO "Post" (title, content, status, metadata, tags, "authorId")
         VALUES ('Hello World', 'Content here', 'PUBLISHED', '{"views": 100}', ARRAY['tech', 'tutorial'], 1)
       `);
 
       // Verify data
-      const users = await pgContext.pool.query(`SELECT * FROM "user"`);
+      const users = await pgContext.pool.query(`SELECT * FROM "User"`);
       expect(users.rows[0].email).toBe("test@example.com");
       expect(users.rows[0].role).toBe("ADMIN");
       expect(users.rows[0].tags).toEqual(["developer", "writer"]);
       expect(users.rows[0].preferences).toEqual({ theme: "dark" });
 
-      const posts = await pgContext.pool.query(`SELECT * FROM "post"`);
+      const posts = await pgContext.pool.query(`SELECT * FROM "Post"`);
       expect(posts.rows[0].title).toBe("Hello World");
       expect(posts.rows[0].status).toBe("PUBLISHED");
       expect(posts.rows[0].metadata).toEqual({ views: 100 });
@@ -692,11 +692,11 @@ describe("PostgreSQL migrations with testcontainers", () => {
 
       // Verify timestamp works
       await pgContext.pool.query(`
-        INSERT INTO "event" (name, "endTime")
+        INSERT INTO "Event" (name, "endTime")
         VALUES ('Test Event', '2024-12-31 23:59:59+00')
       `);
 
-      const events = await pgContext.pool.query(`SELECT * FROM "event"`);
+      const events = await pgContext.pool.query(`SELECT * FROM "Event"`);
       expect(events.rows[0].name).toBe("Test Event");
       expect(events.rows[0]["startTime"]).toBeInstanceOf(Date);
     });
@@ -735,10 +735,10 @@ describe("PostgreSQL migrations with testcontainers", () => {
 
       // Verify bigint works
       await pgContext.pool.query(`
-        INSERT INTO "counter" (value) VALUES (9223372036854775807)
+        INSERT INTO "Counter" (value) VALUES (9223372036854775807)
       `);
 
-      const counters = await pgContext.pool.query(`SELECT * FROM "counter"`);
+      const counters = await pgContext.pool.query(`SELECT * FROM "Counter"`);
       // pg returns bigint as string by default
       expect(counters.rows[0].value).toBe("9223372036854775807");
     });
@@ -777,10 +777,10 @@ describe("PostgreSQL migrations with testcontainers", () => {
 
       // Verify decimal works
       await pgContext.pool.query(`
-        INSERT INTO "price" (amount) VALUES (123.45)
+        INSERT INTO "Price" (amount) VALUES (123.45)
       `);
 
-      const prices = await pgContext.pool.query(`SELECT * FROM "price"`);
+      const prices = await pgContext.pool.query(`SELECT * FROM "Price"`);
       expect(prices.rows[0].amount).toBe("123.45");
     });
 
@@ -817,10 +817,10 @@ describe("PostgreSQL migrations with testcontainers", () => {
 
       // Verify float works
       await pgContext.pool.query(`
-        INSERT INTO "measurement" (value) VALUES (3.14159)
+        INSERT INTO "Measurement" (value) VALUES (3.14159)
       `);
 
-      const measurements = await pgContext.pool.query(`SELECT * FROM "measurement"`);
+      const measurements = await pgContext.pool.query(`SELECT * FROM "Measurement"`);
       expect(measurements.rows[0].value).toBeCloseTo(3.14159);
     });
   });
@@ -904,7 +904,7 @@ CREATE TABLE "another_table" (
       expect(tableNames).not.toContain("test_table");
 
       // User table from first migration should still exist
-      expect(tableNames).toContain("user");
+      expect(tableNames).toContain("User");
     });
   });
 });

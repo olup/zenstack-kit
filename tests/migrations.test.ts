@@ -58,12 +58,12 @@ describe("createMigration", () => {
       throw new Error("Expected a migration to be generated");
     }
 
-    expect(migration.up).toContain("createTable('user')");
-    expect(migration.up).toContain("createTable('post')");
+    expect(migration.up).toContain("createTable('User')");
+    expect(migration.up).toContain("createTable('Post')");
     // Prisma-compatible naming: {table}_pkey, {table}_{columns}_key
-    expect(migration.up).toContain("addPrimaryKeyConstraint('user_pkey'");
-    expect(migration.up).toContain("addPrimaryKeyConstraint('post_pkey'");
-    expect(migration.up).toContain("addUniqueConstraint('user_email_key'");
+    expect(migration.up).toContain("addPrimaryKeyConstraint('User_pkey'");
+    expect(migration.up).toContain("addPrimaryKeyConstraint('Post_pkey'");
+    expect(migration.up).toContain("addUniqueConstraint('User_email_key'");
     expect(migration.up).toContain("notNull()");
   });
 
@@ -78,8 +78,8 @@ describe("createMigration", () => {
       throw new Error("Expected a migration to be generated");
     }
 
-    expect(migration.down).toContain("dropTable('user')");
-    expect(migration.down).toContain("dropTable('post')");
+    expect(migration.down).toContain("dropTable('User')");
+    expect(migration.down).toContain("dropTable('Post')");
   });
 
   it("should sanitize migration name", async () => {
@@ -149,11 +149,11 @@ describe("createMigration", () => {
         throw new Error("Expected second migration to be generated");
       }
 
-      expect(second.up).toContain("alterTable('user')");
+      expect(second.up).toContain("alterTable('User')");
       expect(second.up).toContain("addColumn('email'");
       // Prisma naming: {table}_{columns}_key
-      expect(second.up).toContain("addUniqueConstraint('user_email_key'");
-      expect(second.up).not.toContain("createTable('user')");
+      expect(second.up).toContain("addUniqueConstraint('User_email_key'");
+      expect(second.up).not.toContain("createTable('User')");
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
@@ -197,7 +197,7 @@ describe("createMigration", () => {
       expect(second.up).toContain("alterColumn('name'");
       expect(second.up).toContain("dropNotNull()");
       expect(second.up).toContain("dropDefault()");
-      expect(second.up).not.toContain("createTable('user')");
+      expect(second.up).not.toContain("createTable('User')");
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
@@ -238,9 +238,9 @@ describe("createMigration", () => {
       }
 
       // Prisma naming: {table}_{columns}_idx
-      expect(second.up).toContain("createIndex('post_title_idx')");
-      expect(second.up).toContain("createIndex('user_name_idx')");
-      expect(second.up).not.toContain("createTable('post')");
+      expect(second.up).toContain("createIndex('Post_title_idx')");
+      expect(second.up).toContain("createIndex('User_name_idx')");
+      expect(second.up).not.toContain("createTable('Post')");
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
@@ -313,8 +313,8 @@ describe("createMigration", () => {
       }
 
       // Prisma naming: {table}_{columns}_idx
-      expect(second.up).toContain("dropIndex('post_title_idx')");
-      expect(second.up).not.toContain("createTable('post')");
+      expect(second.up).toContain("dropIndex('Post_title_idx')");
+      expect(second.up).not.toContain("createTable('Post')");
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
@@ -355,7 +355,7 @@ describe("createMigration", () => {
       }
 
       // Prisma naming: {table}_{columns}_key
-      expect(second.up).toContain("dropConstraint('user_name_email_key')");
+      expect(second.up).toContain("dropConstraint('User_name_email_key')");
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
@@ -396,8 +396,8 @@ describe("createMigration", () => {
       }
 
       // Prisma naming: {table}_{columns}_fkey
-      expect(second.up).toContain("dropConstraint('post_authorId_fkey')");
-      expect(second.up).toContain("addForeignKeyConstraint('post_editorId_fkey'");
+      expect(second.up).toContain("dropConstraint('Post_authorId_fkey')");
+      expect(second.up).toContain("addForeignKeyConstraint('Post_editorId_fkey'");
       expect(second.up).toContain("addColumn('editorId'");
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
@@ -439,8 +439,8 @@ describe("createMigration", () => {
       }
 
       // Prisma naming: {table}_pkey
-      expect(second.up).toContain("dropConstraint('user_pkey')");
-      expect(second.up).toContain("addPrimaryKeyConstraint('user_pkey'");
+      expect(second.up).toContain("dropConstraint('User_pkey')");
+      expect(second.up).toContain("addPrimaryKeyConstraint('User_pkey'");
       expect(second.up).toContain("[\"org\",\"name\"]");
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
@@ -482,7 +482,7 @@ describe("createMigration", () => {
       }
 
       // Prisma naming: {table}_{columns}_idx
-      expect(second.up).toContain("createIndex('user_name_email_idx')");
+      expect(second.up).toContain("createIndex('User_name_email_idx')");
       expect(second.up).toContain(".column('name')");
       expect(second.up).toContain(".column('email')");
     } finally {
@@ -524,21 +524,21 @@ describe("createMigration", () => {
 
       await migrationModule.up(db);
 
-      const userColumnsResult = await db.executeQuery(sql`PRAGMA table_info('user')`.compile(db));
+      const userColumnsResult = await db.executeQuery(sql`PRAGMA table_info('User')`.compile(db));
       const userColumns = userColumnsResult.rows.map((row: any) => row.name);
 
       expect(userColumns).toContain("id");
       expect(userColumns).toContain("email");
       expect(userColumns).toContain("name");
 
-      const postColumnsResult = await db.executeQuery(sql`PRAGMA table_info('post')`.compile(db));
+      const postColumnsResult = await db.executeQuery(sql`PRAGMA table_info('Post')`.compile(db));
       const postColumns = postColumnsResult.rows.map((row: any) => row.name);
 
       expect(postColumns).toContain("id");
       expect(postColumns).toContain("title");
       expect(postColumns).toContain("authorId");
 
-      const userIndexes = await db.executeQuery(sql`PRAGMA index_list('user')`.compile(db));
+      const userIndexes = await db.executeQuery(sql`PRAGMA index_list('User')`.compile(db));
       const uniqueIndex = userIndexes.rows.find((row: any) => row.unique === 1) as { name: string } | undefined;
       expect(uniqueIndex).toBeTruthy();
 
@@ -548,14 +548,14 @@ describe("createMigration", () => {
       const uniqueIndexColumns = uniqueIndexInfo.rows.map((row: any) => row.name);
       expect(uniqueIndexColumns).toContain("email");
 
-      const postIndexes = await db.executeQuery(sql`PRAGMA index_list('post')`.compile(db));
+      const postIndexes = await db.executeQuery(sql`PRAGMA index_list('Post')`.compile(db));
       const postIndexNames = postIndexes.rows.map((row: any) => row.name);
       // Prisma naming: {table}_{columns}_idx
-      expect(postIndexNames).toContain("post_title_idx");
+      expect(postIndexNames).toContain("Post_title_idx");
 
-      const foreignKeys = await db.executeQuery(sql`PRAGMA foreign_key_list('post')`.compile(db));
+      const foreignKeys = await db.executeQuery(sql`PRAGMA foreign_key_list('Post')`.compile(db));
       const fkTables = foreignKeys.rows.map((row: any) => row.table);
-      expect(fkTables).toContain("user");
+      expect(fkTables).toContain("User");
     } finally {
       if (db) {
         await db.destroy();
@@ -601,7 +601,7 @@ describe("createMigration", () => {
         dialect: new SqliteDialect({ database: sqlite }),
       });
 
-      const userColumnsResult = await db.executeQuery(sql`PRAGMA table_info('user')`.compile(db));
+      const userColumnsResult = await db.executeQuery(sql`PRAGMA table_info('User')`.compile(db));
       const userColumns = userColumnsResult.rows.map((row: any) => row.name);
 
       expect(userColumns).toContain("id");
