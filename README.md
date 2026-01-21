@@ -100,6 +100,16 @@ zenstack-kit migrate apply
 
 Migrations are tracked in the `_prisma_migrations` table, making them compatible with `prisma migrate deploy`.
 
+### Migration log and checksums
+
+zenstack-kit maintains `meta/_migration_log` alongside your migrations. It stores a SHA256 checksum for each `migration.sql` so integrity checks work even when you never apply migrations locally.
+
+Flow:
+- On `migrate create`, a checksum entry is appended to the log.
+- On `migrate apply`, applied migrations are verified against the database and log.
+- For pending migrations, the log is auto-updated from disk by default (so edits or empty migrations do not require manual rehash).
+- Use `--strict` (or `ZENSTACK_MIGRATION_STRICT=1`) to disable auto-rehash and fail on any pending mismatch (recommended for CI).
+
 ## CLI Commands
 
 Run `zenstack-kit` without arguments to launch the interactive menu, or run commands directly. For CI or non-TTY environments, pass `--no-ui` to bypass Ink.
@@ -142,6 +152,8 @@ Options:
 - `-s, --schema <path>` - Path to ZenStack schema
 - `-m, --migrations <path>` - Migrations directory
 - `--dialect <dialect>` - Database dialect (`sqlite`, `postgres`, `mysql`)
+- `--empty` - Create an empty migration (no schema diff)
+- `--update-snapshot` - Update snapshot when used with `--empty`
 - `-c, --config <path>` - Path to zenstack-kit config file
 
 ### `zenstack-kit migrate apply`
@@ -158,13 +170,15 @@ Options:
 - `--url <url>` - Database connection URL (overrides config)
 - `--table <name>` - Migrations table name (default: `_prisma_migrations`)
 - `--db-schema <name>` - Database schema for migrations table (PostgreSQL only, default: `public`)
+- `--migration <name>` - Apply a single migration (must be the next pending one)
 - `--preview` - Preview pending migrations without applying
 - `--mark-applied` - Mark pending migrations as applied without running SQL
+- `--strict` - Enforce pending migration log checksums (no auto-rehash)
 - `-c, --config <path>` - Path to zenstack-kit config file
 
 ### `zenstack-kit migrate rehash`
 
-Rebuild the migration log checksums from the `migration.sql` files (useful after manual edits).
+Rebuild the migration log checksums from the `migration.sql` files (useful after manual edits or when strict mode fails).
 
 ```bash
 zenstack-kit migrate rehash

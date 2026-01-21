@@ -43,6 +43,17 @@ export interface CreateInitialMigrationOptions {
   dialect: KyselyDialect;
 }
 
+export interface CreateEmptyMigrationOptions {
+  /** Migration name */
+  name: string;
+  /** Path to ZenStack schema file */
+  schemaPath: string;
+  /** Output directory for migration files */
+  outputPath: string;
+  /** Update snapshot to current schema */
+  updateSnapshot?: boolean;
+}
+
 /**
  * Generate timestamp string for migration folder name
  */
@@ -56,6 +67,45 @@ export function generateTimestamp(): string {
     String(now.getMinutes()).padStart(2, "0"),
     String(now.getSeconds()).padStart(2, "0"),
   ].join("");
+}
+
+/**
+ * Create a Prisma-compatible empty migration
+ */
+export async function createEmptyMigration(
+  options: CreateEmptyMigrationOptions
+): Promise<PrismaMigration> {
+  const timestamp = Date.now();
+  const timestampStr = generateTimestamp();
+  const safeName = options.name.replace(/[^a-z0-9]/gi, "_").toLowerCase();
+  const folderName = `${timestampStr}_${safeName}`;
+  const folderPath = path.join(options.outputPath, folderName);
+
+  const sqlContent = [
+    `-- Migration: ${options.name}`,
+    `-- Generated at: ${new Date(timestamp).toISOString()}`,
+    "",
+    "",
+  ].join("\n");
+
+  await fs.mkdir(folderPath, { recursive: true });
+  await fs.writeFile(path.join(folderPath, "migration.sql"), sqlContent, "utf-8");
+
+  if (options.updateSnapshot) {
+    const currentSchema = await generateSchemaSnapshot(options.schemaPath);
+    const { snapshotPath } = getSnapshotPaths(options.outputPath);
+    await writeSnapshot(snapshotPath, currentSchema);
+  }
+
+  const checksum = calculateChecksum(sqlContent);
+  await appendToMigrationLog(options.outputPath, { name: folderName, checksum });
+
+  return {
+    folderName,
+    folderPath,
+    sql: sqlContent,
+    timestamp,
+  };
 }
 
 /**

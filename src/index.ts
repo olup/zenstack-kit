@@ -25,6 +25,7 @@ export { setPromptProvider, type PromptProvider } from "./cli/prompt-provider.js
 // Prisma-compatible migrations (default)
 export {
   createPrismaMigration,
+  createEmptyMigration,
   applyPrismaMigrations,
   previewPrismaMigrations,
   hasPrismaSchemaChanges,
@@ -40,6 +41,7 @@ export {
   detectPotentialRenames,
   type PrismaMigrationOptions,
   type PrismaMigration,
+  type CreateEmptyMigrationOptions,
   type ApplyPrismaMigrationsOptions,
   type ApplyPrismaMigrationsResult,
   type PreviewPrismaMigrationsResult,

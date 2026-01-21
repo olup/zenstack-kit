@@ -1718,7 +1718,7 @@ describe("Prisma migrations - checksum verification", () => {
     }
   });
 
-  it("should fail apply when migration file is modified", async () => {
+  it("should fail apply when migration file is modified in strict mode", async () => {
     writeSchema(`
       datasource db {
         provider = "sqlite"
@@ -1746,11 +1746,50 @@ describe("Prisma migrations - checksum verification", () => {
       migrationsFolder: MIGRATIONS_PATH,
       dialect: "sqlite",
       databasePath: DB_PATH,
+      strict: true,
     });
 
     expect(result.failed).toBeDefined();
     expect(result.failed?.error).toContain("Checksum mismatch");
     expect(result.applied.length).toBe(0);
+  });
+
+  it("should auto-rehash pending migration when file is modified in non-strict mode", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id Int @id
+      }
+    `);
+
+    const migration = await createPrismaMigration({
+      name: "init",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    const sqlPath = path.join(migration!.folderPath, "migration.sql");
+    const originalContent = fs.readFileSync(sqlPath, "utf-8");
+    const updatedContent = originalContent + "\n-- Tampered!";
+    fs.writeFileSync(sqlPath, updatedContent, "utf-8");
+
+    const result = await applyPrismaMigrations({
+      migrationsFolder: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      databasePath: DB_PATH,
+    });
+
+    expect(result.failed).toBeUndefined();
+    expect(result.applied.length).toBe(1);
+
+    const entries = await readMigrationLog(MIGRATIONS_PATH);
+    expect(entries.length).toBe(1);
+    expect(entries[0].checksum).toBe(calculateChecksum(updatedContent));
   });
 
   it("should apply migration when checksum matches", async () => {
@@ -1814,6 +1853,128 @@ describe("Prisma migrations - checksum verification", () => {
     // Should still work without log (no checksum verification)
     expect(result.failed).toBeUndefined();
     expect(result.applied.length).toBe(1);
+  });
+});
+
+describe("Prisma migrations - targeted apply", () => {
+  let db: ReturnType<typeof Database> | null = null;
+
+  beforeAll(() => {
+    cleanup();
+    fs.mkdirSync(TEST_DIR, { recursive: true });
+  });
+
+  afterAll(() => {
+    if (db) {
+      db.close();
+      db = null;
+    }
+    cleanup();
+  });
+
+  beforeEach(() => {
+    if (db) {
+      db.close();
+      db = null;
+    }
+    if (fs.existsSync(DB_PATH)) {
+      fs.unlinkSync(DB_PATH);
+    }
+    if (fs.existsSync(MIGRATIONS_PATH)) {
+      fs.rmSync(MIGRATIONS_PATH, { recursive: true });
+    }
+  });
+
+  it("should apply only the next pending migration when targeted", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id Int @id
+      }
+    `);
+
+    const first = await createPrismaMigration({
+      name: "init",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    await new Promise((r) => setTimeout(r, 1100));
+
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id    Int @id
+        email String
+      }
+    `);
+
+    await createPrismaMigration({
+      name: "add_email",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    const result = await applyPrismaMigrations({
+      migrationsFolder: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      databasePath: DB_PATH,
+      targetMigration: first!.folderName,
+    });
+
+    expect(result.failed).toBeUndefined();
+    expect(result.applied.length).toBe(1);
+    expect(result.applied[0].migrationName).toBe(first!.folderName);
+  });
+
+  it("should fail when targeting a non-next pending migration", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id Int @id
+      }
+    `);
+
+    await createPrismaMigration({
+      name: "init",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    await new Promise((r) => setTimeout(r, 1100));
+
+    const second = await createPrismaMigration({
+      name: "add_email",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    const result = await applyPrismaMigrations({
+      migrationsFolder: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      databasePath: DB_PATH,
+      targetMigration: second!.folderName,
+    });
+
+    expect(result.failed).toBeDefined();
+    expect(result.failed?.error).toContain("next pending migration");
+    expect(result.applied.length).toBe(0);
   });
 });
 

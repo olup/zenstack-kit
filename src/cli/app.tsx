@@ -101,6 +101,12 @@ function parseArgs(): { command?: Command; options: CommandOptions } {
       options.preview = true;
     } else if (arg === "--mark-applied") {
       options.markApplied = true;
+    } else if (arg === "--strict") {
+      options.strict = true;
+    } else if (arg === "--empty") {
+      options.empty = true;
+    } else if (arg === "--update-snapshot") {
+      options.updateSnapshot = true;
     } else if (arg === "--force" || arg === "-f") {
       options.force = true;
     } else if (arg === "--config" || arg === "-c") {
@@ -158,12 +164,15 @@ function HelpDisplay() {
         <Text dimColor>-n, --name &lt;name&gt;        Migration name</Text>
         <Text dimColor>--dialect &lt;dialect&gt;      Database dialect (sqlite, postgres, mysql)</Text>
         <Text dimColor>--url &lt;url&gt;              Database connection URL</Text>
-        <Text dimColor>--migration &lt;name&gt;       Target a single migration (rehash only)</Text>
+        <Text dimColor>--migration &lt;name&gt;       Target a single migration (apply/rehash)</Text>
         <Text dimColor>--no-ui                   Disable Ink UI (useful for CI/non-TTY)</Text>
         <Text dimColor>--create-initial         Create initial migration (skip prompt)</Text>
         <Text dimColor>--baseline               Create baseline only (skip prompt)</Text>
+        <Text dimColor>--empty                  Create an empty migration (no schema diff)</Text>
+        <Text dimColor>--update-snapshot        Update snapshot when used with --empty</Text>
         <Text dimColor>--preview                Preview pending migrations without applying</Text>
         <Text dimColor>--mark-applied           Mark pending migrations as applied without running SQL</Text>
+        <Text dimColor>--strict                 Enforce pending migration log checksums (no auto-rehash)</Text>
         <Text dimColor>-f, --force              Force operation without confirmation</Text>
         <Text dimColor>-c, --config &lt;path&gt;     Path to zenstack-kit config file</Text>
       </Box>
@@ -341,12 +350,15 @@ function printHelpText() {
     "  -n, --name <name>       Migration name",
     "  --dialect <dialect>     Database dialect (sqlite, postgres, mysql)",
     "  --url <url>             Database connection URL",
-    "  --migration <name>      Target a single migration (rehash only)",
+    "  --migration <name>      Target a single migration (apply/rehash)",
     "  --no-ui                 Disable Ink UI (useful for CI/non-TTY)",
     "  --create-initial        Create initial migration (skip prompt)",
     "  --baseline              Create baseline only (skip prompt)",
+    "  --empty                 Create an empty migration (no schema diff)",
+    "  --update-snapshot       Update snapshot when used with --empty",
     "  --preview               Preview pending migrations without applying",
     "  --mark-applied          Mark pending migrations as applied without running SQL",
+    "  --strict                Enforce pending migration log checksums (no auto-rehash)",
     "  -f, --force             Force operation without confirmation",
     "  -c, --config <path>     Path to zenstack-kit config file",
   ];

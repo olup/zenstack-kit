@@ -1,10 +1,12 @@
 export {
+  createEmptyMigration,
   createPrismaMigration,
   createInitialMigration,
   hasPrismaSchemaChanges,
   type PrismaMigrationOptions,
   type PrismaMigration,
   type CreateInitialMigrationOptions,
+  type CreateEmptyMigrationOptions,
 } from "./prisma/create.js";
 
 export {

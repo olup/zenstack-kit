@@ -13,6 +13,7 @@ import { loadConfig } from "../config/loader.js";
 import { pullSchema } from "../schema/pull.js";
 import {
   createPrismaMigration,
+  createEmptyMigration,
   applyPrismaMigrations,
   previewPrismaMigrations,
   hasPrismaSchemaChanges,
@@ -48,6 +49,9 @@ export interface CommandOptions {
   markApplied?: boolean;
   force?: boolean;
   config?: string;
+  empty?: boolean;
+  updateSnapshot?: boolean;
+  strict?: boolean;
 }
 
 export interface CommandContext {
@@ -137,20 +141,26 @@ export async function runMigrateGenerate(ctx: CommandContext): Promise<void> {
     throw new CommandError("No snapshot found. Run 'zenstack-kit init' first.");
   }
 
+  const isEmpty = Boolean(ctx.options.empty);
+
   ctx.log("info", "Generating migration...");
 
-  const hasChanges = await hasPrismaSchemaChanges({
-    schemaPath,
-    outputPath,
-  });
+  if (!isEmpty) {
+    const hasChanges = await hasPrismaSchemaChanges({
+      schemaPath,
+      outputPath,
+    });
 
-  if (!hasChanges) {
-    ctx.log("warning", "No schema changes detected");
-    return;
+    if (!hasChanges) {
+      ctx.log("warning", "No schema changes detected");
+      return;
+    }
   }
 
   // Detect potential renames and prompt user to disambiguate
-  const potentialRenames = await detectPotentialRenames({ schemaPath, outputPath });
+  const potentialRenames = isEmpty
+    ? { tables: [], columns: [] }
+    : await detectPotentialRenames({ schemaPath, outputPath });
 
   const renameTables: Array<{ from: string; to: string }> = [];
   const renameColumns: Array<{ table: string; from: string; to: string }> = [];
@@ -195,14 +205,21 @@ export async function runMigrateGenerate(ctx: CommandContext): Promise<void> {
     }
   }
 
-  const migration = await createPrismaMigration({
-    name,
-    schemaPath,
-    outputPath,
-    dialect,
-    renameTables: renameTables.length > 0 ? renameTables : undefined,
-    renameColumns: renameColumns.length > 0 ? renameColumns : undefined,
-  });
+  const migration = isEmpty
+    ? await createEmptyMigration({
+        name,
+        schemaPath,
+        outputPath,
+        updateSnapshot: ctx.options.updateSnapshot,
+      })
+    : await createPrismaMigration({
+        name,
+        schemaPath,
+        outputPath,
+        dialect,
+        renameTables: renameTables.length > 0 ? renameTables : undefined,
+        renameColumns: renameColumns.length > 0 ? renameColumns : undefined,
+      });
 
   if (!migration) {
     ctx.log("warning", "No schema changes detected");
@@ -211,6 +228,9 @@ export async function runMigrateGenerate(ctx: CommandContext): Promise<void> {
 
   ctx.log("success", `Migration created: ${migration.folderName}/migration.sql`);
   ctx.log("info", `Path: ${migration.folderPath}`);
+  if (isEmpty && ctx.options.updateSnapshot) {
+    ctx.log("info", "Snapshot updated to current schema");
+  }
   ctx.log("info", "Next: run 'zenstack-kit migrate apply' (or --preview to review SQL).");
 }
 
@@ -290,6 +310,12 @@ export async function runMigrateApply(ctx: CommandContext): Promise<void> {
     ctx.log("info", "Applying migrations...");
   }
 
+  const strictEnv = process.env.ZENSTACK_MIGRATION_STRICT;
+  const strict =
+    ctx.options.strict === true ||
+    strictEnv === "1" ||
+    (strictEnv ? strictEnv.toLowerCase() === "true" : false);
+
   const result = await applyPrismaMigrations({
     migrationsFolder: outputPath,
     dialect,
@@ -298,6 +324,8 @@ export async function runMigrateApply(ctx: CommandContext): Promise<void> {
     migrationsTable,
     migrationsSchema,
     markApplied: ctx.options.markApplied,
+    strict,
+    targetMigration: ctx.options.migration,
   });
 
   // Handle coherence errors

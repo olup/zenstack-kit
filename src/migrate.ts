@@ -78,6 +78,17 @@ export interface MigrateOptions {
   preview?: boolean;
 
   /**
+   * Apply a single migration by name (must be the next pending one).
+   */
+  migration?: string;
+
+  /**
+   * Enforce pending migration log checksums (no auto-rehash).
+   * @default false
+   */
+  strict?: boolean;
+
+  /**
    * Current working directory for config resolution.
    * @default process.cwd()
    */
@@ -199,6 +210,8 @@ export async function migrate(options: MigrateOptions = {}): Promise<MigrateResu
     databasePath,
     migrationsTable,
     migrationsSchema,
+    strict: options.strict,
+    targetMigration: options.migration,
   });
 
   if (result.failed) {

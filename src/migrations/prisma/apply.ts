@@ -4,7 +4,7 @@ import * as crypto from "crypto";
 import { sql } from "kysely";
 import type { KyselyDialect } from "../../sql/kysely-adapter.js";
 import { createKyselyAdapter } from "../../sql/kysely-adapter.js";
-import { calculateChecksum, readMigrationLog, type MigrationLogEntry } from "./log.js";
+import { calculateChecksum, readMigrationLog, writeMigrationLog, type MigrationLogEntry } from "./log.js";
 
 export interface ApplyPrismaMigrationsOptions {
   /** Migrations folder path */
@@ -21,6 +21,10 @@ export interface ApplyPrismaMigrationsOptions {
   migrationsSchema?: string;
   /** Mark migrations as applied without executing SQL */
   markApplied?: boolean;
+  /** Enforce checksum/log consistency for pending migrations (no auto-rehash) */
+  strict?: boolean;
+  /** Apply a single migration by name */
+  targetMigration?: string;
 }
 
 export interface ApplyPrismaMigrationsResult {
@@ -376,7 +380,42 @@ export async function applyPrismaMigrations(
       alreadyApplied: [],
     };
 
-    for (const folderName of migrationFoldersWithSql) {
+    const logIndex = new Map(migrationLog.map((entry, index) => [entry.name, index]));
+    let logUpdated = false;
+
+    let migrationFoldersToApply = migrationFoldersWithSql;
+
+    if (options.targetMigration) {
+      const target = options.targetMigration;
+      const pendingMigrations = migrationFoldersWithSql.filter((name) => !appliedMigrations.has(name));
+
+      if (appliedMigrations.has(target)) {
+        result.alreadyApplied.push(target);
+        return result;
+      }
+
+      if (!migrationFoldersWithSql.includes(target)) {
+        result.failed = {
+          migrationName: target,
+          error: `Migration ${target} not found in migrations folder.`,
+        };
+        return result;
+      }
+
+      if (pendingMigrations[0] !== target) {
+        result.failed = {
+          migrationName: target,
+          error:
+            `Migration ${target} is not the next pending migration.\n` +
+            `Apply pending migrations in order or omit --migration.`,
+        };
+        return result;
+      }
+
+      migrationFoldersToApply = [target];
+    }
+
+    for (const folderName of migrationFoldersToApply) {
       if (appliedMigrations.has(folderName)) {
         result.alreadyApplied.push(folderName);
         continue;
@@ -392,19 +431,36 @@ export async function applyPrismaMigrations(
 
       const checksum = calculateChecksum(sqlContent);
 
-      // Verify checksum against migration log (migrationLog already read above)
-      const logEntry = migrationLog.find((m) => m.name === folderName);
-      if (logEntry && logEntry.checksum !== checksum) {
-        result.failed = {
-          migrationName: folderName,
-          error:
-            `Checksum mismatch for migration ${folderName}.\n` +
-            `Expected: ${logEntry.checksum}\n` +
-            `Found: ${checksum}\n` +
-            `The migration file may have been modified after generation.\n` +
-            `If you intended this, run 'zenstack-kit migrate rehash' to rebuild log checksums.`,
-        };
-        break;
+      // Verify or update checksum against migration log (pending migrations only)
+      const logEntryIndex = logIndex.get(folderName);
+      if (logEntryIndex === undefined) {
+        if (options.strict) {
+          result.failed = {
+            migrationName: folderName,
+            error:
+              `Migration ${folderName} is missing from the migration log.\n` +
+              `Run 'zenstack-kit migrate rehash' to rebuild log checksums or disable strict mode.`,
+          };
+          break;
+        }
+        migrationLog.push({ name: folderName, checksum });
+        logIndex.set(folderName, migrationLog.length - 1);
+        logUpdated = true;
+      } else if (migrationLog[logEntryIndex].checksum !== checksum) {
+        if (options.strict) {
+          result.failed = {
+            migrationName: folderName,
+            error:
+              `Checksum mismatch for migration ${folderName}.\n` +
+              `Expected: ${migrationLog[logEntryIndex].checksum}\n` +
+              `Found: ${checksum}\n` +
+              `The migration file may have been modified after generation.\n` +
+              `If you intended this, run 'zenstack-kit migrate rehash' to rebuild log checksums.`,
+          };
+          break;
+        }
+        migrationLog[logEntryIndex] = { name: folderName, checksum };
+        logUpdated = true;
       }
 
       const startTime = Date.now();
@@ -432,6 +488,12 @@ export async function applyPrismaMigrations(
         };
         break; // Stop on first failure
       }
+    }
+
+    if (logUpdated) {
+      migrationLog.sort((a, b) => a.name.localeCompare(b.name));
+      await writeMigrationLog(options.migrationsFolder, migrationLog);
+      logUpdated = false;
     }
 
     return result;
