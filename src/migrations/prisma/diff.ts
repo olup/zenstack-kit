@@ -1,5 +1,5 @@
 import type { KyselyDialect } from "../../sql/kysely-adapter.js";
-import type { SchemaSnapshot, SchemaTable, SchemaColumn } from "../../schema/snapshot.js";
+import type { SchemaSnapshot, SchemaTable, SchemaColumn, SchemaEnum } from "../../schema/snapshot.js";
 import {
   compileCreateTable,
   compileDropTable,
@@ -14,6 +14,9 @@ import {
   compileAddForeignKeyConstraint,
   compileAddPrimaryKeyConstraint,
   compileAlterColumn,
+  compileCreateEnum,
+  compileDropEnum,
+  compileAddEnumValue,
 } from "../../sql/compiler.js";
 
 function diffTableChanges(previousModel: SchemaTable, currentModel: SchemaTable, tableName: string) {
@@ -255,6 +258,49 @@ export function diffSchemas(previous: SchemaSnapshot | null, current: SchemaSnap
     primaryKeyChanges.push(...modelDiff.primaryKeyChanges);
   }
 
+  // Diff enums
+  const previousEnums = new Map<string, SchemaEnum>();
+  const currentEnums = new Map<string, SchemaEnum>();
+
+  (previous?.enums ?? []).forEach((e) => previousEnums.set(e.name, e));
+  (current.enums ?? []).forEach((e) => currentEnums.set(e.name, e));
+
+  const addedEnums: SchemaEnum[] = [];
+  const removedEnums: SchemaEnum[] = [];
+  const alteredEnums: Array<{
+    enumName: string;
+    addedValues: string[];
+    removedValues: string[];
+  }> = [];
+
+  for (const [enumName, enumDef] of currentEnums.entries()) {
+    if (!previousEnums.has(enumName)) {
+      addedEnums.push(enumDef);
+    }
+  }
+
+  for (const [enumName, enumDef] of previousEnums.entries()) {
+    if (!currentEnums.has(enumName)) {
+      removedEnums.push(enumDef);
+    }
+  }
+
+  // Check for altered enums (added/removed values)
+  for (const [enumName, currentEnum] of currentEnums.entries()) {
+    const previousEnum = previousEnums.get(enumName);
+    if (!previousEnum) continue;
+
+    const prevValues = new Set(previousEnum.values);
+    const currValues = new Set(currentEnum.values);
+
+    const addedValues = currentEnum.values.filter((v) => !prevValues.has(v));
+    const removedValues = previousEnum.values.filter((v) => !currValues.has(v));
+
+    if (addedValues.length > 0 || removedValues.length > 0) {
+      alteredEnums.push({ enumName, addedValues, removedValues });
+    }
+  }
+
   return {
     addedModels,
     removedModels,
@@ -270,6 +316,9 @@ export function diffSchemas(previous: SchemaSnapshot | null, current: SchemaSnap
     primaryKeyChanges,
     renamedTables: [] as Array<{ from: string; to: string }>,
     renamedColumns: [] as Array<{ tableName: string; from: string; to: string }>,
+    addedEnums,
+    removedEnums,
+    alteredEnums,
   };
 }
 
@@ -523,6 +572,33 @@ export function buildSqlStatements(
   const down: string[] = [];
   const compileOpts = { dialect };
 
+  // Create enums FIRST (before tables that use them)
+  for (const enumDef of diff.addedEnums) {
+    const sql = compileCreateEnum(enumDef, compileOpts);
+    if (sql) {
+      up.push(sql);
+      const dropSql = compileDropEnum(enumDef.name, compileOpts);
+      if (dropSql) down.unshift(dropSql);
+    }
+  }
+
+  // Add new values to existing enums
+  for (const altered of diff.alteredEnums) {
+    for (const value of altered.addedValues) {
+      const sql = compileAddEnumValue(altered.enumName, value, compileOpts);
+      if (sql) {
+        up.push(sql);
+        // Note: PostgreSQL doesn't support removing enum values easily,
+        // so we don't add a down migration for added values
+      }
+    }
+    // Note: Removing enum values in PostgreSQL requires recreating the type
+    // which is complex and potentially data-losing. We skip this for now.
+    if (altered.removedValues.length > 0 && dialect === "postgres") {
+      up.push(`-- WARNING: Removing enum values (${altered.removedValues.join(", ")}) from "${altered.enumName}" requires manual migration`);
+    }
+  }
+
   // Table renames
   for (const rename of diff.renamedTables) {
     up.push(compileRenameTable(rename.from, rename.to, compileOpts));
@@ -725,6 +801,16 @@ export function buildSqlStatements(
       )
     );
     down.unshift(compileDropConstraint(tableName, foreignKey.name, compileOpts));
+  }
+
+  // Drop enums LAST (after tables that use them are dropped)
+  for (const enumDef of diff.removedEnums) {
+    const sql = compileDropEnum(enumDef.name, compileOpts);
+    if (sql) {
+      up.push(sql);
+      const createSql = compileCreateEnum(enumDef, compileOpts);
+      if (createSql) down.unshift(createSql);
+    }
   }
 
   return { up, down };

@@ -5,7 +5,7 @@
  */
 
 import { loadDocument } from "@zenstackhq/language";
-import { isDataField, isDataModel, isEnum } from "@zenstackhq/language/ast";
+import { isDataField, isDataModel, isEnum, type Enum } from "@zenstackhq/language/ast";
 import type {
   DataField,
   DataFieldAttribute,
@@ -20,6 +20,8 @@ export interface SchemaColumn {
   isArray: boolean;
   default?: string | number | boolean;
   isAutoincrement?: boolean;
+  /** If true, type refers to an enum name rather than a SQL type */
+  isEnum?: boolean;
 }
 
 export interface SchemaConstraint {
@@ -48,8 +50,14 @@ export interface SchemaTable {
   foreignKeys: SchemaForeignKey[];
 }
 
+export interface SchemaEnum {
+  name: string;
+  values: string[];
+}
+
 export interface SchemaSnapshot {
   tables: SchemaTable[];
+  enums: SchemaEnum[];
 }
 
 export interface SchemaSnapshotFile {
@@ -139,6 +147,12 @@ function getDefaultValue(
     return { hasDefault: true, default: `${funcName}()` };
   }
 
+  // Handle enum default values like @default(USER) - these are ReferenceExpr
+  if (expr.$type === "ReferenceExpr") {
+    const enumValue = expr.target.$refText;
+    return { hasDefault: true, default: enumValue };
+  }
+
   return { hasDefault: true };
 }
 
@@ -205,18 +219,18 @@ function buildForeignKeyName(
   return `${tableName}_${columns.join("_")}_fkey`;
 }
 
-function getFieldType(field: DataField): { type: string; isRelation: boolean } {
+function getFieldType(field: DataField): { type: string; isRelation: boolean; isEnum: boolean } {
   const ref = field.type.reference?.ref;
 
   if (ref && isDataModel(ref)) {
-    return { type: ref.name, isRelation: true };
+    return { type: ref.name, isRelation: true, isEnum: false };
   }
 
   if (ref && isEnum(ref)) {
-    return { type: ref.name, isRelation: false };
+    return { type: ref.name, isRelation: false, isEnum: true };
   }
 
-  return { type: field.type.type ?? "String", isRelation: false };
+  return { type: field.type.type ?? "String", isRelation: false, isEnum: false };
 }
 
 function getRelationFieldNames(
@@ -259,15 +273,17 @@ function parseModel(model: DataModel): SchemaTable {
 
     const defaultInfo = getDefaultValue(field);
     const columnName = getColumnName(field);
-    const sqlType = mapFieldTypeToSQL(typeInfo.type);
+    // For enum types, store the enum name directly; for other types, map to SQL type
+    const columnType = typeInfo.isEnum ? typeInfo.type : mapFieldTypeToSQL(typeInfo.type);
 
     columns.push({
       name: columnName,
-      type: sqlType,
+      type: columnType,
       notNull: !field.type.optional,
       isArray: field.type.array ?? false,
       default: defaultInfo.default,
       isAutoincrement: defaultInfo.isAutoincrement,
+      isEnum: typeInfo.isEnum || undefined,
     });
   }
 
@@ -377,6 +393,14 @@ function parseModel(model: DataModel): SchemaTable {
   };
 }
 
+function parseEnum(enumDecl: Enum): SchemaEnum {
+  const values = enumDecl.fields.map((field) => field.name);
+  return {
+    name: enumDecl.name,
+    values,
+  };
+}
+
 export async function generateSchemaSnapshot(schemaPath: string): Promise<SchemaSnapshot> {
   const loadResult = await loadDocument(schemaPath);
   if (!loadResult.success) {
@@ -389,7 +413,12 @@ export async function generateSchemaSnapshot(schemaPath: string): Promise<Schema
     .map((model) => parseModel(model))
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  return { tables };
+  const enumDecls = loadResult.model.declarations.filter(isEnum);
+  const enums = enumDecls
+    .map((enumDecl) => parseEnum(enumDecl))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  return { tables, enums };
 }
 
 export function createSnapshot(schema: SchemaSnapshot): SchemaSnapshotFile {

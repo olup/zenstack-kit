@@ -70,6 +70,11 @@ interface PrimaryKeyInfo {
   columns: string[];
 }
 
+interface EnumInfo {
+  name: string;
+  values: string[];
+}
+
 function pluralize(word: string): string {
   if (word.endsWith("s") || word.endsWith("x") || word.endsWith("ch") || word.endsWith("sh")) {
     return word + "es";
@@ -152,10 +157,14 @@ interface BuildModelOptions {
   primaryKeys: PrimaryKeyInfo[];
   allTables: Set<string>;
   columnDefaults: Map<string, string | null>;
+  enums?: EnumInfo[];
 }
 
 function buildModelBlock(options: BuildModelOptions): string {
-  const { table, foreignKeys, indexes, primaryKeys, allTables, columnDefaults } = options;
+  const { table, foreignKeys, indexes, primaryKeys, allTables, columnDefaults, enums = [] } = options;
+
+  // Build a map of enum names for quick lookup
+  const enumNames = new Set(enums.map((e) => e.name));
   const modelName = toPascalCase(table.name) || "Model";
   const fieldLines: string[] = [];
 
@@ -249,7 +258,20 @@ function buildModelBlock(options: BuildModelOptions): string {
   for (const column of sortedColumns) {
     const fieldName = toCamelCase(column.name) || column.name;
     const mapped = fieldName !== column.name;
-    const { type, isArray } = normalizeType(column.dataType);
+
+    // Check if the column type is an enum (PostgreSQL stores udt_name for enum types)
+    const rawDataType = column.dataType.replace(/\[\]$/, ""); // Remove array suffix
+    const isEnumType = enumNames.has(rawDataType);
+    const isArray = column.dataType.endsWith("[]");
+
+    let type: string;
+    if (isEnumType) {
+      type = toPascalCase(rawDataType);
+    } else {
+      const normalized = normalizeType(column.dataType);
+      type = normalized.type;
+    }
+
     const optional = column.isNullable ? "?" : "";
     const modifiers: string[] = [];
 
@@ -632,6 +654,56 @@ async function extractColumnDefaults(
   return defaultsByTable;
 }
 
+async function extractEnums(
+  db: Awaited<ReturnType<typeof createKyselyAdapter>>["db"],
+  dialect: KyselyDialect
+): Promise<EnumInfo[]> {
+  const enums: EnumInfo[] = [];
+
+  if (dialect === "postgres") {
+    // Query PostgreSQL system catalogs for enum types
+    const result = await sql<{
+      enum_name: string;
+      enum_value: string;
+    }>`
+      SELECT
+        t.typname as enum_name,
+        e.enumlabel as enum_value
+      FROM pg_type t
+      JOIN pg_enum e ON t.oid = e.enumtypid
+      JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+      WHERE n.nspname = 'public'
+      ORDER BY t.typname, e.enumsortorder
+    `.execute(db);
+
+    // Group by enum name
+    const enumMap = new Map<string, string[]>();
+    for (const row of result.rows) {
+      if (!enumMap.has(row.enum_name)) {
+        enumMap.set(row.enum_name, []);
+      }
+      enumMap.get(row.enum_name)!.push(row.enum_value);
+    }
+
+    for (const [name, values] of enumMap) {
+      enums.push({ name, values });
+    }
+  }
+  // MySQL and SQLite don't have standalone enum types
+  // MySQL uses inline ENUM definitions in column types
+
+  return enums;
+}
+
+function buildEnumBlock(enumInfo: EnumInfo): string {
+  const lines = [`enum ${toPascalCase(enumInfo.name)} {`];
+  for (const value of enumInfo.values) {
+    lines.push(`  ${value}`);
+  }
+  lines.push("}");
+  return lines.join("\n");
+}
+
 export async function pullSchema(options: PullOptions): Promise<PullResult> {
   const { db, destroy } = await createKyselyAdapter({
     dialect: options.dialect,
@@ -649,8 +721,13 @@ export async function pullSchema(options: PullOptions): Promise<PullResult> {
     const indexes = await extractIndexes(db, options.dialect, tableNames);
     const primaryKeys = await extractPrimaryKeys(db, options.dialect, tableNames);
     const columnDefaultsByTable = await extractColumnDefaults(db, options.dialect, tableNames);
+    const enums = await extractEnums(db, options.dialect);
 
-    const blocks = filtered.map((table) =>
+    // Build enum blocks
+    const enumBlocks = enums.map((e) => buildEnumBlock(e));
+
+    // Build model blocks
+    const modelBlocks = filtered.map((table) =>
       buildModelBlock({
         table,
         foreignKeys,
@@ -658,10 +735,11 @@ export async function pullSchema(options: PullOptions): Promise<PullResult> {
         primaryKeys,
         allTables,
         columnDefaults: columnDefaultsByTable.get(table.name) ?? new Map(),
+        enums, // Pass enums for type mapping
       })
     );
 
-    const schema = [buildDatasourceBlock(options.dialect), ...blocks].join("\n\n");
+    const schema = [buildDatasourceBlock(options.dialect), ...enumBlocks, ...modelBlocks].join("\n\n");
 
     if (options.writeFile !== false) {
       await fs.mkdir(path.dirname(options.outputPath), { recursive: true });

@@ -20,7 +20,7 @@ import {
   sql,
 } from "kysely";
 import type { KyselyDialect } from "./kysely-adapter.js";
-import type { SchemaTable, SchemaColumn } from "../schema/snapshot.js";
+import type { SchemaTable, SchemaColumn, SchemaEnum } from "../schema/snapshot.js";
 
 /**
  * Create a Kysely instance configured for SQL compilation only (no actual DB connection)
@@ -76,10 +76,12 @@ export function compileCreateTable(
   let builder = db.schema.createTable(model.name);
 
   for (const column of model.columns) {
-    const columnType = mapColumnType(column.type, options.dialect, {
-      isArray: column.isArray,
-      isAutoincrement: column.isAutoincrement,
-    });
+    const columnType = column.isEnum
+      ? mapColumnTypeWithEnum(column, options.dialect)
+      : mapColumnType(column.type, options.dialect, {
+          isArray: column.isArray,
+          isAutoincrement: column.isAutoincrement,
+        });
     builder = builder.addColumn(column.name, sql.raw(columnType) as any, (cb) => {
       // For SERIAL types in PostgreSQL, NOT NULL is implicit and we don't need defaults
       const isSerialType = column.isAutoincrement && options.dialect === "postgres";
@@ -87,7 +89,7 @@ export function compileCreateTable(
         cb = cb.notNull();
       }
       if (column.default !== undefined && !isSerialType) {
-        cb = cb.defaultTo(sql.raw(formatDefault(column.default, options.dialect)));
+        cb = cb.defaultTo(sql.raw(formatDefault(column.default, options.dialect, column)));
       }
       return cb;
     });
@@ -139,10 +141,12 @@ export function compileAddColumn(
   options: CompileSqlOptions
 ): string {
   const db = createCompilerDb(options.dialect);
-  const columnType = mapColumnType(column.type, options.dialect, {
-    isArray: column.isArray,
-    isAutoincrement: column.isAutoincrement,
-  });
+  const columnType = column.isEnum
+    ? mapColumnTypeWithEnum(column, options.dialect)
+    : mapColumnType(column.type, options.dialect, {
+        isArray: column.isArray,
+        isAutoincrement: column.isAutoincrement,
+      });
 
   return (
     db.schema
@@ -153,7 +157,7 @@ export function compileAddColumn(
           cb = cb.notNull();
         }
         if (column.default !== undefined && !isSerialType) {
-          cb = cb.defaultTo(sql.raw(formatDefault(column.default, options.dialect)));
+          cb = cb.defaultTo(sql.raw(formatDefault(column.default, options.dialect, column)));
         }
         return cb;
       })
@@ -410,11 +414,20 @@ function mapColumnType(
 /**
  * Format a default value for SQL
  */
-function formatDefault(value: string | number | boolean, dialect: KyselyDialect): string {
+function formatDefault(
+  value: string | number | boolean,
+  dialect: KyselyDialect,
+  column?: SchemaColumn
+): string {
   if (typeof value === "string") {
     // Check if it's a function call like now() or autoincrement()
     if (/^\w+\([^)]*\)$/.test(value)) {
       return value;
+    }
+    // For enum columns in PostgreSQL, we need to cast the default value
+    if (column?.isEnum && dialect === "postgres") {
+      const escapedValue = value.replace(/'/g, "''");
+      return `'${escapedValue}'::"${column.type}"`;
     }
     // Escape string values
     return `'${value.replace(/'/g, "''")}'`;
@@ -426,4 +439,77 @@ function formatDefault(value: string | number | boolean, dialect: KyselyDialect)
     return value ? "true" : "false";
   }
   return String(value);
+}
+
+/**
+ * Compile a CREATE TYPE ... AS ENUM statement for PostgreSQL
+ * For MySQL and SQLite, enums are handled differently (inline or as text)
+ */
+export function compileCreateEnum(
+  enumDef: SchemaEnum,
+  options: CompileSqlOptions
+): string | null {
+  if (options.dialect !== "postgres") {
+    // MySQL and SQLite don't have standalone enum types
+    return null;
+  }
+
+  const values = enumDef.values.map((v) => `'${v.replace(/'/g, "''")}'`).join(", ");
+  return `CREATE TYPE "${enumDef.name}" AS ENUM (${values});`;
+}
+
+/**
+ * Compile a DROP TYPE statement for PostgreSQL
+ */
+export function compileDropEnum(
+  enumName: string,
+  options: CompileSqlOptions
+): string | null {
+  if (options.dialect !== "postgres") {
+    return null;
+  }
+
+  return `DROP TYPE IF EXISTS "${enumName}";`;
+}
+
+/**
+ * Compile an ALTER TYPE ... ADD VALUE statement for PostgreSQL
+ * Adds a new value to an existing enum type
+ */
+export function compileAddEnumValue(
+  enumName: string,
+  value: string,
+  options: CompileSqlOptions
+): string | null {
+  if (options.dialect !== "postgres") {
+    return null;
+  }
+
+  const escapedValue = value.replace(/'/g, "''");
+  return `ALTER TYPE "${enumName}" ADD VALUE '${escapedValue}';`;
+}
+
+/**
+ * Map column type considering enum types
+ * For enum columns, returns the enum type name (PostgreSQL) or text (other dialects)
+ */
+export function mapColumnTypeWithEnum(
+  column: SchemaColumn,
+  dialect: KyselyDialect
+): string {
+  if (column.isEnum) {
+    if (dialect === "postgres") {
+      // Use the native enum type for PostgreSQL
+      const baseType = `"${column.type}"`;
+      return column.isArray ? `${baseType}[]` : baseType;
+    }
+    // For MySQL and SQLite, fall back to text
+    return column.isArray ? "text[]" : "text";
+  }
+
+  // Use existing type mapping for non-enum columns
+  return mapColumnType(column.type, dialect, {
+    isArray: column.isArray,
+    isAutoincrement: column.isAutoincrement,
+  });
 }

@@ -169,7 +169,7 @@ describe("PostgreSQL migrations with testcontainers", () => {
   });
 
   describe("Enum types", () => {
-    it("should handle enum fields", async () => {
+    it("should create native PostgreSQL enum type", async () => {
       writeSchema(`
         datasource db {
           provider = "postgresql"
@@ -197,7 +197,11 @@ describe("PostgreSQL migrations with testcontainers", () => {
       });
 
       expect(migration).not.toBeNull();
-      console.log("Generated SQL with enum:", migration!.sql);
+      // Verify CREATE TYPE statement is generated
+      expect(migration!.sql).toContain('CREATE TYPE "Role" AS ENUM');
+      expect(migration!.sql).toContain("'USER'");
+      expect(migration!.sql).toContain("'ADMIN'");
+      expect(migration!.sql).toContain("'MODERATOR'");
 
       // Apply migration
       const result = await applyPrismaMigrations({
@@ -209,7 +213,22 @@ describe("PostgreSQL migrations with testcontainers", () => {
       expect(result.applied.length).toBe(1);
       expect(result.failed).toBeUndefined();
 
-      // Verify enum type was created or text type is used
+      // Verify enum type was created in PostgreSQL
+      const enumTypes = await pgContext.pool.query(`
+        SELECT t.typname as enum_name, e.enumlabel as enum_value
+        FROM pg_type t
+        JOIN pg_enum e ON t.oid = e.enumtypid
+        JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+        WHERE n.nspname = 'public'
+        ORDER BY t.typname, e.enumsortorder
+      `);
+
+      const roleValues = enumTypes.rows
+        .filter((r: any) => r.enum_name === "Role")
+        .map((r: any) => r.enum_value);
+      expect(roleValues).toEqual(["USER", "ADMIN", "MODERATOR"]);
+
+      // Verify column uses the enum type
       const columns = await pgContext.pool.query(`
         SELECT column_name, data_type, udt_name
         FROM information_schema.columns
@@ -218,7 +237,7 @@ describe("PostgreSQL migrations with testcontainers", () => {
 
       const roleColumn = columns.rows.find((r: any) => r.column_name === "role");
       expect(roleColumn).toBeDefined();
-      console.log("Role column type:", roleColumn);
+      expect(roleColumn.udt_name).toBe("Role");
 
       // Insert and query to verify it works
       await pgContext.pool.query(`
@@ -227,6 +246,11 @@ describe("PostgreSQL migrations with testcontainers", () => {
       const users = await pgContext.pool.query(`SELECT * FROM "User"`);
       expect(users.rows.length).toBe(1);
       expect(users.rows[0].role).toBe("ADMIN");
+
+      // Verify invalid enum values are rejected
+      await expect(
+        pgContext.pool.query(`INSERT INTO "User" (name, role) VALUES ('Bad User', 'INVALID')`)
+      ).rejects.toThrow();
     });
 
     it("should handle multiple enum types", async () => {
@@ -262,7 +286,8 @@ describe("PostgreSQL migrations with testcontainers", () => {
       });
 
       expect(migration).not.toBeNull();
-      console.log("Generated SQL with multiple enums:", migration!.sql);
+      expect(migration!.sql).toContain('CREATE TYPE "Role" AS ENUM');
+      expect(migration!.sql).toContain('CREATE TYPE "Status" AS ENUM');
 
       const result = await applyPrismaMigrations({
         migrationsFolder: MIGRATIONS_PATH,
@@ -273,6 +298,16 @@ describe("PostgreSQL migrations with testcontainers", () => {
       expect(result.applied.length).toBe(1);
       expect(result.failed).toBeUndefined();
 
+      // Verify both enum types were created
+      const enumTypes = await pgContext.pool.query(`
+        SELECT DISTINCT typname FROM pg_type t
+        JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+        WHERE n.nspname = 'public' AND t.typtype = 'e'
+      `);
+      const enumNames = enumTypes.rows.map((r: any) => r.typname);
+      expect(enumNames).toContain("Role");
+      expect(enumNames).toContain("Status");
+
       // Insert and verify
       await pgContext.pool.query(`
         INSERT INTO "User" (role, status) VALUES ('ADMIN', 'ACTIVE')
@@ -280,6 +315,805 @@ describe("PostgreSQL migrations with testcontainers", () => {
       const users = await pgContext.pool.query(`SELECT * FROM "User"`);
       expect(users.rows[0].role).toBe("ADMIN");
       expect(users.rows[0].status).toBe("ACTIVE");
+    });
+
+    it("should add new values to existing enum", async () => {
+      // First migration: create enum with initial values
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        enum Role {
+          USER
+          ADMIN
+        }
+
+        model User {
+          id   Int  @id @default(autoincrement())
+          role Role @default(USER)
+        }
+      `);
+
+      await createPrismaMigration({
+        name: "init",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+
+      await applyPrismaMigrations({
+        migrationsFolder: MIGRATIONS_PATH,
+        dialect: "postgres",
+        connectionUrl: pgContext.connectionUrl,
+      });
+
+      // Wait to ensure different timestamp
+      await new Promise((r) => setTimeout(r, 1100));
+
+      // Second migration: add new enum values
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        enum Role {
+          USER
+          ADMIN
+          MODERATOR
+          SUPERADMIN
+        }
+
+        model User {
+          id   Int  @id @default(autoincrement())
+          role Role @default(USER)
+        }
+      `);
+
+      const migration = await createPrismaMigration({
+        name: "add_enum_values",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+
+      expect(migration).not.toBeNull();
+      expect(migration!.sql).toContain('ALTER TYPE "Role" ADD VALUE');
+      expect(migration!.sql).toContain("'MODERATOR'");
+      expect(migration!.sql).toContain("'SUPERADMIN'");
+
+      const result = await applyPrismaMigrations({
+        migrationsFolder: MIGRATIONS_PATH,
+        dialect: "postgres",
+        connectionUrl: pgContext.connectionUrl,
+      });
+
+      expect(result.applied.length).toBe(1);
+      expect(result.failed).toBeUndefined();
+
+      // Verify new enum values exist
+      const enumValues = await pgContext.pool.query(`
+        SELECT e.enumlabel as enum_value
+        FROM pg_type t
+        JOIN pg_enum e ON t.oid = e.enumtypid
+        JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+        WHERE n.nspname = 'public' AND t.typname = 'Role'
+        ORDER BY e.enumsortorder
+      `);
+      const values = enumValues.rows.map((r: any) => r.enum_value);
+      expect(values).toContain("USER");
+      expect(values).toContain("ADMIN");
+      expect(values).toContain("MODERATOR");
+      expect(values).toContain("SUPERADMIN");
+
+      // Verify we can use the new values
+      await pgContext.pool.query(`
+        INSERT INTO "User" (role) VALUES ('MODERATOR')
+      `);
+      const users = await pgContext.pool.query(`SELECT * FROM "User"`);
+      expect(users.rows[0].role).toBe("MODERATOR");
+    });
+
+    it("should warn when removing enum values", async () => {
+      // First migration: create enum with values
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        enum Role {
+          USER
+          ADMIN
+          MODERATOR
+          DEPRECATED_ROLE
+        }
+
+        model User {
+          id   Int  @id @default(autoincrement())
+          role Role @default(USER)
+        }
+      `);
+
+      await createPrismaMigration({
+        name: "init",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+
+      await applyPrismaMigrations({
+        migrationsFolder: MIGRATIONS_PATH,
+        dialect: "postgres",
+        connectionUrl: pgContext.connectionUrl,
+      });
+
+      await new Promise((r) => setTimeout(r, 1100));
+
+      // Second migration: remove an enum value
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        enum Role {
+          USER
+          ADMIN
+          MODERATOR
+        }
+
+        model User {
+          id   Int  @id @default(autoincrement())
+          role Role @default(USER)
+        }
+      `);
+
+      const migration = await createPrismaMigration({
+        name: "remove_enum_value",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+
+      expect(migration).not.toBeNull();
+      // Should contain a warning comment about manual migration needed
+      expect(migration!.sql).toContain("WARNING");
+      expect(migration!.sql).toContain("DEPRECATED_ROLE");
+      expect(migration!.sql).toContain("requires manual migration");
+    });
+
+    it("should drop enum type when no longer used", async () => {
+      // First migration: create enum
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        enum Role {
+          USER
+          ADMIN
+        }
+
+        enum Status {
+          ACTIVE
+          INACTIVE
+        }
+
+        model User {
+          id     Int    @id @default(autoincrement())
+          role   Role   @default(USER)
+          status Status @default(ACTIVE)
+        }
+      `);
+
+      await createPrismaMigration({
+        name: "init",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+
+      await applyPrismaMigrations({
+        migrationsFolder: MIGRATIONS_PATH,
+        dialect: "postgres",
+        connectionUrl: pgContext.connectionUrl,
+      });
+
+      await new Promise((r) => setTimeout(r, 1100));
+
+      // Second migration: remove Status enum entirely
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        enum Role {
+          USER
+          ADMIN
+        }
+
+        model User {
+          id   Int  @id @default(autoincrement())
+          role Role @default(USER)
+        }
+      `);
+
+      const migration = await createPrismaMigration({
+        name: "remove_status_enum",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+
+      expect(migration).not.toBeNull();
+      expect(migration!.sql).toContain('DROP TYPE IF EXISTS "Status"');
+
+      const result = await applyPrismaMigrations({
+        migrationsFolder: MIGRATIONS_PATH,
+        dialect: "postgres",
+        connectionUrl: pgContext.connectionUrl,
+      });
+
+      expect(result.applied.length).toBe(1);
+      expect(result.failed).toBeUndefined();
+
+      // Verify Status enum was dropped
+      const enumTypes = await pgContext.pool.query(`
+        SELECT DISTINCT typname FROM pg_type t
+        JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+        WHERE n.nspname = 'public' AND t.typtype = 'e'
+      `);
+      const enumNames = enumTypes.rows.map((r: any) => r.typname);
+      expect(enumNames).toContain("Role");
+      expect(enumNames).not.toContain("Status");
+    });
+
+    it("should create new enum in subsequent migration", async () => {
+      // First migration: model without enum
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        model User {
+          id   Int    @id @default(autoincrement())
+          name String
+        }
+      `);
+
+      await createPrismaMigration({
+        name: "init",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+
+      await applyPrismaMigrations({
+        migrationsFolder: MIGRATIONS_PATH,
+        dialect: "postgres",
+        connectionUrl: pgContext.connectionUrl,
+      });
+
+      await new Promise((r) => setTimeout(r, 1100));
+
+      // Second migration: add enum and use it
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        enum Role {
+          USER
+          ADMIN
+        }
+
+        model User {
+          id   Int    @id @default(autoincrement())
+          name String
+          role Role?
+        }
+      `);
+
+      const migration = await createPrismaMigration({
+        name: "add_role_enum",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+
+      expect(migration).not.toBeNull();
+      expect(migration!.sql).toContain('CREATE TYPE "Role" AS ENUM');
+      expect(migration!.sql).toContain('alter table "User" add column "role"');
+
+      const result = await applyPrismaMigrations({
+        migrationsFolder: MIGRATIONS_PATH,
+        dialect: "postgres",
+        connectionUrl: pgContext.connectionUrl,
+      });
+
+      expect(result.applied.length).toBe(1);
+      expect(result.failed).toBeUndefined();
+
+      // Verify enum was created and can be used
+      await pgContext.pool.query(`
+        INSERT INTO "User" (name, role) VALUES ('Test', 'ADMIN')
+      `);
+      const users = await pgContext.pool.query(`SELECT * FROM "User"`);
+      expect(users.rows[0].role).toBe("ADMIN");
+    });
+
+    it("should handle enum with default value", async () => {
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        enum Priority {
+          LOW
+          MEDIUM
+          HIGH
+          CRITICAL
+        }
+
+        model Task {
+          id       Int      @id @default(autoincrement())
+          title    String
+          priority Priority @default(MEDIUM)
+        }
+      `);
+
+      const migration = await createPrismaMigration({
+        name: "enum_with_default",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+
+      expect(migration).not.toBeNull();
+
+      await applyPrismaMigrations({
+        migrationsFolder: MIGRATIONS_PATH,
+        dialect: "postgres",
+        connectionUrl: pgContext.connectionUrl,
+      });
+
+      // Insert without specifying priority - should use default
+      await pgContext.pool.query(`
+        INSERT INTO "Task" (title) VALUES ('Test Task')
+      `);
+      const tasks = await pgContext.pool.query(`SELECT * FROM "Task"`);
+      expect(tasks.rows[0].priority).toBe("MEDIUM");
+    });
+
+    it("should handle enum arrays", async () => {
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        enum Permission {
+          READ
+          WRITE
+          DELETE
+          ADMIN
+        }
+
+        model User {
+          id          Int          @id @default(autoincrement())
+          name        String
+          permissions Permission[]
+        }
+      `);
+
+      const migration = await createPrismaMigration({
+        name: "enum_array",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+
+      expect(migration).not.toBeNull();
+      expect(migration!.sql).toContain('CREATE TYPE "Permission" AS ENUM');
+      // Should use array type
+      expect(migration!.sql).toMatch(/"Permission"\[\]/);
+
+      const result = await applyPrismaMigrations({
+        migrationsFolder: MIGRATIONS_PATH,
+        dialect: "postgres",
+        connectionUrl: pgContext.connectionUrl,
+      });
+
+      expect(result.applied.length).toBe(1);
+      expect(result.failed).toBeUndefined();
+
+      // Verify array of enums works
+      await pgContext.pool.query(`
+        INSERT INTO "User" (name, permissions)
+        VALUES ('Admin User', ARRAY['READ', 'WRITE', 'ADMIN']::"Permission"[])
+      `);
+      const users = await pgContext.pool.query(`SELECT * FROM "User"`);
+      // pg driver returns enum arrays as strings like "{READ,WRITE,ADMIN}"
+      // so we parse it or check the string representation
+      const permissions = users.rows[0].permissions;
+      if (typeof permissions === "string") {
+        expect(permissions).toBe("{READ,WRITE,ADMIN}");
+      } else {
+        expect(permissions).toEqual(["READ", "WRITE", "ADMIN"]);
+      }
+    });
+
+    it("should handle enum used in multiple models", async () => {
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        enum Status {
+          DRAFT
+          PUBLISHED
+          ARCHIVED
+        }
+
+        model Post {
+          id     Int    @id @default(autoincrement())
+          title  String
+          status Status @default(DRAFT)
+        }
+
+        model Comment {
+          id     Int    @id @default(autoincrement())
+          text   String
+          status Status @default(DRAFT)
+        }
+      `);
+
+      const migration = await createPrismaMigration({
+        name: "shared_enum",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+
+      expect(migration).not.toBeNull();
+      // Should only create the enum once
+      const createTypeCount = (migration!.sql.match(/CREATE TYPE "Status"/g) || []).length;
+      expect(createTypeCount).toBe(1);
+
+      await applyPrismaMigrations({
+        migrationsFolder: MIGRATIONS_PATH,
+        dialect: "postgres",
+        connectionUrl: pgContext.connectionUrl,
+      });
+
+      // Both tables should use the same enum type
+      await pgContext.pool.query(`INSERT INTO "Post" (title, status) VALUES ('Test', 'PUBLISHED')`);
+      await pgContext.pool.query(`INSERT INTO "Comment" (text, status) VALUES ('Test', 'ARCHIVED')`);
+
+      const posts = await pgContext.pool.query(`SELECT status FROM "Post"`);
+      const comments = await pgContext.pool.query(`SELECT status FROM "Comment"`);
+      expect(posts.rows[0].status).toBe("PUBLISHED");
+      expect(comments.rows[0].status).toBe("ARCHIVED");
+    });
+
+    it("should preserve existing rows when adding enum values", async () => {
+      // First migration: create enum and insert data
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        enum Status {
+          ACTIVE
+          INACTIVE
+        }
+
+        model User {
+          id     Int    @id @default(autoincrement())
+          name   String
+          status Status @default(ACTIVE)
+        }
+      `);
+
+      await createPrismaMigration({
+        name: "init",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+
+      await applyPrismaMigrations({
+        migrationsFolder: MIGRATIONS_PATH,
+        dialect: "postgres",
+        connectionUrl: pgContext.connectionUrl,
+      });
+
+      // Insert some data with existing enum values
+      await pgContext.pool.query(`INSERT INTO "User" (name, status) VALUES ('Alice', 'ACTIVE')`);
+      await pgContext.pool.query(`INSERT INTO "User" (name, status) VALUES ('Bob', 'INACTIVE')`);
+
+      await new Promise((r) => setTimeout(r, 1100));
+
+      // Second migration: add new enum value
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        enum Status {
+          ACTIVE
+          INACTIVE
+          PENDING
+          SUSPENDED
+        }
+
+        model User {
+          id     Int    @id @default(autoincrement())
+          name   String
+          status Status @default(ACTIVE)
+        }
+      `);
+
+      const migration = await createPrismaMigration({
+        name: "add_status_values",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+
+      expect(migration).not.toBeNull();
+
+      await applyPrismaMigrations({
+        migrationsFolder: MIGRATIONS_PATH,
+        dialect: "postgres",
+        connectionUrl: pgContext.connectionUrl,
+      });
+
+      // Verify existing data is preserved
+      const users = await pgContext.pool.query(`SELECT name, status FROM "User" ORDER BY id`);
+      expect(users.rows.length).toBe(2);
+      expect(users.rows[0].name).toBe("Alice");
+      expect(users.rows[0].status).toBe("ACTIVE");
+      expect(users.rows[1].name).toBe("Bob");
+      expect(users.rows[1].status).toBe("INACTIVE");
+
+      // Verify we can use new values
+      await pgContext.pool.query(`INSERT INTO "User" (name, status) VALUES ('Charlie', 'PENDING')`);
+      await pgContext.pool.query(`UPDATE "User" SET status = 'SUSPENDED' WHERE name = 'Bob'`);
+
+      const updatedUsers = await pgContext.pool.query(`SELECT name, status FROM "User" ORDER BY id`);
+      expect(updatedUsers.rows[1].status).toBe("SUSPENDED");
+      expect(updatedUsers.rows[2].status).toBe("PENDING");
+    });
+
+    it("should handle enum array columns with existing data", async () => {
+      // First migration: create enum array
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        enum Tag {
+          TECH
+          BUSINESS
+          SCIENCE
+        }
+
+        model Article {
+          id   Int   @id @default(autoincrement())
+          tags Tag[]
+        }
+      `);
+
+      await createPrismaMigration({
+        name: "init",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+
+      await applyPrismaMigrations({
+        migrationsFolder: MIGRATIONS_PATH,
+        dialect: "postgres",
+        connectionUrl: pgContext.connectionUrl,
+      });
+
+      // Insert data with enum arrays
+      await pgContext.pool.query(`
+        INSERT INTO "Article" (tags) VALUES (ARRAY['TECH', 'SCIENCE']::"Tag"[])
+      `);
+      await pgContext.pool.query(`
+        INSERT INTO "Article" (tags) VALUES (ARRAY['BUSINESS']::"Tag"[])
+      `);
+
+      await new Promise((r) => setTimeout(r, 1100));
+
+      // Second migration: add new enum value
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        enum Tag {
+          TECH
+          BUSINESS
+          SCIENCE
+          HEALTH
+          SPORTS
+        }
+
+        model Article {
+          id   Int   @id @default(autoincrement())
+          tags Tag[]
+        }
+      `);
+
+      await createPrismaMigration({
+        name: "add_tags",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+
+      await applyPrismaMigrations({
+        migrationsFolder: MIGRATIONS_PATH,
+        dialect: "postgres",
+        connectionUrl: pgContext.connectionUrl,
+      });
+
+      // Verify existing array data is preserved
+      const articles = await pgContext.pool.query(`SELECT tags FROM "Article" ORDER BY id`);
+      expect(articles.rows.length).toBe(2);
+      // Arrays come back as strings like "{TECH,SCIENCE}"
+      expect(articles.rows[0].tags).toMatch(/TECH/);
+      expect(articles.rows[0].tags).toMatch(/SCIENCE/);
+      expect(articles.rows[1].tags).toMatch(/BUSINESS/);
+
+      // Verify we can use new values in arrays
+      await pgContext.pool.query(`
+        INSERT INTO "Article" (tags) VALUES (ARRAY['HEALTH', 'SPORTS', 'TECH']::"Tag"[])
+      `);
+      const newArticle = await pgContext.pool.query(`SELECT tags FROM "Article" WHERE id = 3`);
+      expect(newArticle.rows[0].tags).toMatch(/HEALTH/);
+      expect(newArticle.rows[0].tags).toMatch(/SPORTS/);
+    });
+
+    it("should detect when rows exist with value being removed", async () => {
+      // First migration: create enum with values
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        enum Priority {
+          LOW
+          MEDIUM
+          HIGH
+          CRITICAL
+        }
+
+        model Task {
+          id       Int      @id @default(autoincrement())
+          title    String
+          priority Priority @default(MEDIUM)
+        }
+      `);
+
+      await createPrismaMigration({
+        name: "init",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+
+      await applyPrismaMigrations({
+        migrationsFolder: MIGRATIONS_PATH,
+        dialect: "postgres",
+        connectionUrl: pgContext.connectionUrl,
+      });
+
+      // Insert data using the value we'll try to remove
+      await pgContext.pool.query(`INSERT INTO "Task" (title, priority) VALUES ('Urgent', 'CRITICAL')`);
+      await pgContext.pool.query(`INSERT INTO "Task" (title, priority) VALUES ('Normal', 'MEDIUM')`);
+
+      await new Promise((r) => setTimeout(r, 1100));
+
+      // Second migration: try to remove CRITICAL value
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        enum Priority {
+          LOW
+          MEDIUM
+          HIGH
+        }
+
+        model Task {
+          id       Int      @id @default(autoincrement())
+          title    String
+          priority Priority @default(MEDIUM)
+        }
+      `);
+
+      const migration = await createPrismaMigration({
+        name: "remove_critical",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+
+      // Should generate a warning about the removed value
+      expect(migration).not.toBeNull();
+      expect(migration!.sql).toContain("WARNING");
+      expect(migration!.sql).toContain("CRITICAL");
+
+      // The data with CRITICAL should still be queryable
+      // (migration only warns, doesn't actually remove the enum value)
+      const tasks = await pgContext.pool.query(`SELECT title, priority FROM "Task" ORDER BY id`);
+      expect(tasks.rows[0].priority).toBe("CRITICAL");
+      expect(tasks.rows[1].priority).toBe("MEDIUM");
+    });
+
+    it("should handle optional enum fields", async () => {
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        enum Category {
+          WORK
+          PERSONAL
+          OTHER
+        }
+
+        model Note {
+          id       Int       @id @default(autoincrement())
+          text     String
+          category Category?
+        }
+      `);
+
+      const migration = await createPrismaMigration({
+        name: "optional_enum",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+
+      expect(migration).not.toBeNull();
+
+      await applyPrismaMigrations({
+        migrationsFolder: MIGRATIONS_PATH,
+        dialect: "postgres",
+        connectionUrl: pgContext.connectionUrl,
+      });
+
+      // Insert with null category
+      await pgContext.pool.query(`INSERT INTO "Note" (text) VALUES ('No category')`);
+      // Insert with category
+      await pgContext.pool.query(`INSERT INTO "Note" (text, category) VALUES ('Work note', 'WORK')`);
+
+      const notes = await pgContext.pool.query(`SELECT text, category FROM "Note" ORDER BY id`);
+      expect(notes.rows[0].category).toBeNull();
+      expect(notes.rows[1].category).toBe("WORK");
     });
   });
 
@@ -491,12 +1325,18 @@ describe("PostgreSQL migrations with testcontainers", () => {
       expect(result.applied.length).toBe(1);
       expect(result.failed).toBeUndefined();
 
-      // Verify array works
+      // Verify array works - use proper enum array cast
       await pgContext.pool.query(`
-        INSERT INTO "User" (name, permissions) VALUES ('Admin', ARRAY['READ', 'WRITE', 'ADMIN']::text[])
+        INSERT INTO "User" (name, permissions) VALUES ('Admin', ARRAY['READ', 'WRITE', 'ADMIN']::"Permission"[])
       `);
       const users = await pgContext.pool.query(`SELECT * FROM "User"`);
-      expect(users.rows[0].permissions).toEqual(["READ", "WRITE", "ADMIN"]);
+      // pg driver returns enum arrays as strings like "{READ,WRITE,ADMIN}"
+      const permissions = users.rows[0].permissions;
+      if (typeof permissions === "string") {
+        expect(permissions).toBe("{READ,WRITE,ADMIN}");
+      } else {
+        expect(permissions).toEqual(["READ", "WRITE", "ADMIN"]);
+      }
     });
   });
 
