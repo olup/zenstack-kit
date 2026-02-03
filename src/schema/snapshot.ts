@@ -143,7 +143,13 @@ function getDefaultValue(
     if (funcName === "now") {
       return { hasDefault: true, default: "now()" };
     }
-    // Return function name for other functions
+    // cuid(), uuid(), nanoid() are handled at the application level by ZenStack/Prisma,
+    // not at the database level. We mark hasDefault as true so the column isn't
+    // required in INSERT statements (the ORM will provide the value).
+    if (funcName === "cuid" || funcName === "uuid" || funcName === "nanoid") {
+      return { hasDefault: true };
+    }
+    // Return function name for other functions (dbgenerated, etc.)
     return { hasDefault: true, default: `${funcName}()` };
   }
 
