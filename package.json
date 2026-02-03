@@ -1,6 +1,6 @@
 {
   "name": "zenstack-kit",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "Drizzle-kit like CLI tooling for ZenStack schemas with Kysely support",
   "type": "module",
   "main": "./dist/index.js",
