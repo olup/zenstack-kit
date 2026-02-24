@@ -1151,6 +1151,13 @@ describe("PostgreSQL migrations with testcontainers", () => {
       expect(result.applied.length).toBe(1);
       expect(result.failed).toBeUndefined();
 
+      // Verify column is jsonb (not json)
+      const columns = await pgContext.pool.query(`
+        SELECT column_name, udt_name FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'User' AND column_name = 'metadata'
+      `);
+      expect(columns.rows[0].udt_name).toBe("jsonb");
+
       // Verify JSON column works
       await pgContext.pool.query(`
         INSERT INTO "User" (name, metadata) VALUES ('Test', '{"key": "value", "nested": {"a": 1}}')
@@ -1190,9 +1197,9 @@ describe("PostgreSQL migrations with testcontainers", () => {
       expect(result.applied.length).toBe(1);
       expect(result.failed).toBeUndefined();
 
-      // Verify NOT NULL constraint
+      // Verify NOT NULL constraint and jsonb type
       const columns = await pgContext.pool.query(`
-        SELECT column_name, is_nullable, data_type
+        SELECT column_name, is_nullable, data_type, udt_name
         FROM information_schema.columns
         WHERE table_schema = 'public' AND table_name = 'Config'
       `);
@@ -1200,6 +1207,7 @@ describe("PostgreSQL migrations with testcontainers", () => {
       const settingsColumn = columns.rows.find((r: any) => r.column_name === "settings");
       expect(settingsColumn).toBeDefined();
       expect(settingsColumn.is_nullable).toBe("NO");
+      expect(settingsColumn.udt_name).toBe("jsonb");
     });
   });
 

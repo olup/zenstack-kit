@@ -401,14 +401,17 @@ function mapColumnType(
     return type;
   }
 
+  // For PostgreSQL, use jsonb instead of json (binary JSON: more efficient, supports indexing)
+  const resolvedType = type === "json" && dialect === "postgres" ? "jsonb" : type;
+
   // Handle array types for PostgreSQL
   if (isArray && dialect === "postgres") {
-    return `${type}[]`;
+    return `${resolvedType}[]`;
   }
 
   // Most types are already SQL types from our snapshot, just return as-is
   // The Kysely compiler will handle dialect-specific adjustments
-  return type;
+  return resolvedType;
 }
 
 /**
