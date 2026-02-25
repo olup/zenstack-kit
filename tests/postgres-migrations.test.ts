@@ -1209,6 +1209,103 @@ describe("PostgreSQL migrations with testcontainers", () => {
       expect(settingsColumn.is_nullable).toBe("NO");
       expect(settingsColumn.udt_name).toBe("jsonb");
     });
+
+    it("should generate jsonb columns for custom types with @json attribute", async () => {
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        type LocalizedString {
+          en String
+          fr String?
+        }
+
+        model Product {
+          id   Int               @id @default(autoincrement())
+          name LocalizedString   @json
+          tags LocalizedString[] @json
+        }
+      `);
+
+      const migration = await createPrismaMigration({
+        name: "custom_type_jsonb",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+
+      expect(migration).not.toBeNull();
+
+      const result = await applyPrismaMigrations({
+        migrationsFolder: MIGRATIONS_PATH,
+        dialect: "postgres",
+        connectionUrl: pgContext.connectionUrl,
+      });
+
+      expect(result.applied.length).toBe(1);
+      expect(result.failed).toBeUndefined();
+
+      // Verify both columns are jsonb, not text
+      const columns = await pgContext.pool.query(`
+        SELECT column_name, udt_name FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'Product'
+        AND column_name IN ('name', 'tags')
+        ORDER BY column_name
+      `);
+
+      const nameCol = columns.rows.find((r: any) => r.column_name === "name");
+      const tagsCol = columns.rows.find((r: any) => r.column_name === "tags");
+      // Single jsonb column
+      expect(nameCol?.udt_name).toBe("jsonb");
+      // Array of jsonb: PostgreSQL reports udt_name as "_jsonb"
+      expect(tagsCol?.udt_name).toBe("_jsonb");
+
+      // Verify data round-trips correctly
+      await pgContext.pool.query(`
+        INSERT INTO "Product" (name, tags)
+        VALUES ('{"en": "Hello", "fr": "Bonjour"}', ARRAY['{"en": "A"}', '{"en": "B"}']::jsonb[])
+      `);
+      const rows = await pgContext.pool.query(`SELECT * FROM "Product"`);
+      expect(rows.rows[0].name).toEqual({ en: "Hello", fr: "Bonjour" });
+    });
+
+    it("should not generate spurious migration for @json custom type fields on re-run", async () => {
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        type LocalizedString {
+          en String
+          fr String?
+        }
+
+        model Product {
+          id   Int             @id @default(autoincrement())
+          name LocalizedString @json
+        }
+      `);
+
+      const first = await createPrismaMigration({
+        name: "custom_type_jsonb",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+      expect(first).not.toBeNull();
+
+      // Running again with the same schema should produce no changes (no jsonb → text diff)
+      const second = await createPrismaMigration({
+        name: "should_be_empty",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+      expect(second).toBeNull();
+    });
   });
 
   describe("Array types", () => {

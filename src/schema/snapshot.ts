@@ -279,8 +279,16 @@ function parseModel(model: DataModel): SchemaTable {
 
     const defaultInfo = getDefaultValue(field);
     const columnName = getColumnName(field);
-    // For enum types, store the enum name directly; for other types, map to SQL type
-    const columnType = typeInfo.isEnum ? typeInfo.type : mapFieldTypeToSQL(typeInfo.type);
+    // For enum types, store the enum name directly.
+    // For fields with @json attribute, treat as json regardless of the field's type name
+    // (supports custom types like `TranslatedField[] @json`).
+    // For all other types, map to SQL type.
+    const hasJsonAttr = !!getAttribute(field, "@json");
+    const columnType = typeInfo.isEnum
+      ? typeInfo.type
+      : hasJsonAttr
+        ? "json"
+        : mapFieldTypeToSQL(typeInfo.type);
 
     columns.push({
       name: columnName,

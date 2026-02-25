@@ -2833,3 +2833,86 @@ describe("Prisma migrations - coherence validation", () => {
     expect(result.alreadyApplied.length).toBe(1);
   }, 10000);
 });
+
+describe("@json attribute on custom types", () => {
+  beforeAll(() => {
+    cleanup();
+  });
+
+  afterAll(() => {
+    cleanup();
+  });
+
+  beforeEach(() => {
+    if (fs.existsSync(MIGRATIONS_PATH)) {
+      fs.rmSync(MIGRATIONS_PATH, { recursive: true });
+    }
+  });
+
+  it("should use json type (not text) for custom-typed fields with @json", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = env("DATABASE_URL")
+      }
+
+      type LocalizedString {
+        en String
+        fr String?
+      }
+
+      model Product {
+        id   Int             @id @default(autoincrement())
+        name LocalizedString @json
+      }
+    `);
+
+    const migration = await createPrismaMigration({
+      name: "custom_type_json",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    expect(migration).not.toBeNull();
+    // Should use json type, not the "text" fallback for unknown types
+    expect(migration!.sql).toContain('"name" json');
+    expect(migration!.sql).not.toContain('"name" text');
+  });
+
+  it("should not generate a spurious migration for @json custom type fields on re-run", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = env("DATABASE_URL")
+      }
+
+      type LocalizedString {
+        en String
+        fr String?
+      }
+
+      model Product {
+        id   Int             @id @default(autoincrement())
+        name LocalizedString @json
+      }
+    `);
+
+    const first = await createPrismaMigration({
+      name: "custom_type_json",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+    expect(first).not.toBeNull();
+
+    // Running again with the same schema should produce no changes
+    const second = await createPrismaMigration({
+      name: "should_be_empty",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+    expect(second).toBeNull();
+  });
+});
