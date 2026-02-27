@@ -2915,4 +2915,70 @@ describe("@json attribute on custom types", () => {
     });
     expect(second).toBeNull();
   });
+
+  it("should use plain json (not json array) for CustomType[] @json fields", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "postgresql"
+        url      = env("DATABASE_URL")
+      }
+
+      type LocalizedString {
+        en String
+        fr String?
+      }
+
+      model Product {
+        id   Int               @id @default(autoincrement())
+        tags LocalizedString[] @json
+      }
+    `);
+
+    const migration = await createPrismaMigration({
+      name: "custom_type_array_json",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "postgres",
+    });
+
+    expect(migration).not.toBeNull();
+    // CustomType[] @json stores the array as a single JSON blob — column must be jsonb, not jsonb[]
+    expect(migration!.sql).toContain('"tags" jsonb');
+    expect(migration!.sql).not.toContain('"tags" jsonb[]');
+  });
+
+  it("should not generate a spurious migration for CustomType[] @json fields on re-run", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "postgresql"
+        url      = env("DATABASE_URL")
+      }
+
+      type LocalizedString {
+        en String
+        fr String?
+      }
+
+      model Product {
+        id   Int               @id @default(autoincrement())
+        tags LocalizedString[] @json
+      }
+    `);
+
+    const first = await createPrismaMigration({
+      name: "custom_type_array_json",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "postgres",
+    });
+    expect(first).not.toBeNull();
+
+    const second = await createPrismaMigration({
+      name: "should_be_empty",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "postgres",
+    });
+    expect(second).toBeNull();
+  });
 });

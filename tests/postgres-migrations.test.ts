@@ -1257,18 +1257,18 @@ describe("PostgreSQL migrations with testcontainers", () => {
 
       const nameCol = columns.rows.find((r: any) => r.column_name === "name");
       const tagsCol = columns.rows.find((r: any) => r.column_name === "tags");
-      // Single jsonb column
+      // Both must be plain jsonb — CustomType[] @json stores the array as a single JSON blob
       expect(nameCol?.udt_name).toBe("jsonb");
-      // Array of jsonb: PostgreSQL reports udt_name as "_jsonb"
-      expect(tagsCol?.udt_name).toBe("_jsonb");
+      expect(tagsCol?.udt_name).toBe("jsonb");
 
-      // Verify data round-trips correctly
+      // Verify data round-trips correctly (tags inserted as a JSON array string)
       await pgContext.pool.query(`
         INSERT INTO "Product" (name, tags)
-        VALUES ('{"en": "Hello", "fr": "Bonjour"}', ARRAY['{"en": "A"}', '{"en": "B"}']::jsonb[])
+        VALUES ('{"en": "Hello", "fr": "Bonjour"}', '[{"en": "A"}, {"en": "B"}]')
       `);
       const rows = await pgContext.pool.query(`SELECT * FROM "Product"`);
       expect(rows.rows[0].name).toEqual({ en: "Hello", fr: "Bonjour" });
+      expect(rows.rows[0].tags).toEqual([{ en: "A" }, { en: "B" }]);
     });
 
     it("should not generate spurious migration for @json custom type fields on re-run", async () => {

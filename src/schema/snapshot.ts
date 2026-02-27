@@ -294,7 +294,9 @@ function parseModel(model: DataModel): SchemaTable {
       name: columnName,
       type: columnType,
       notNull: !field.type.optional,
-      isArray: field.type.array ?? false,
+      // @json fields store the entire value (including arrays) as a single JSON blob,
+      // so isArray must be false to avoid generating jsonb[] instead of jsonb in PostgreSQL.
+      isArray: hasJsonAttr ? false : (field.type.array ?? false),
       default: defaultInfo.default,
       isAutoincrement: defaultInfo.isAutoincrement,
       isEnum: typeInfo.isEnum || undefined,
