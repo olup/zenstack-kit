@@ -5,6 +5,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import * as fs from "fs";
 import * as path from "path";
+import * as crypto from "crypto";
 import Database from "better-sqlite3";
 import {
   createPrismaMigration,
@@ -2723,6 +2724,236 @@ describe("Prisma migrations - coherence validation", () => {
     expect(result.coherenceErrors![0].migrationName).toBe(migration2!.folderName);
     expect(result.coherenceErrors![0].details).toContain("not applied, yet later migration");
   }, 15000);
+
+  it("should apply unapplied migration when ignoreOrderMismatch is true", async () => {
+    // Migration1 creates User, migration2 creates Post (independent), migration3 creates Comment.
+    // We apply migration1 normally, then fake-mark migration3 as applied (without executing its SQL)
+    // to simulate the real-world scenario where a later migration was applied elsewhere.
+    // ignoreOrderMismatch should let us apply migration2 despite the gap.
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id Int @id
+      }
+    `);
+
+    const migration1 = await createPrismaMigration({
+      name: "create_user",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    await new Promise((r) => setTimeout(r, 1100));
+
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id Int @id
+      }
+
+      model Post {
+        id Int @id
+      }
+    `);
+
+    const migration2 = await createPrismaMigration({
+      name: "create_post",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    await new Promise((r) => setTimeout(r, 1100));
+
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id Int @id
+      }
+
+      model Post {
+        id Int @id
+      }
+
+      model Comment {
+        id Int @id
+      }
+    `);
+
+    const migration3 = await createPrismaMigration({
+      name: "create_comment",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    // Apply only migration1
+    await applyPrismaMigrations({
+      migrationsFolder: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      databasePath: DB_PATH,
+      targetMigration: migration1!.folderName,
+    });
+
+    // Fake-mark migration3 as applied (with its real checksum so checksum check passes)
+    const migration3Sql = fs.readFileSync(
+      path.join(MIGRATIONS_PATH, migration3!.folderName, "migration.sql"),
+      "utf-8"
+    );
+    db = new Database(DB_PATH);
+    db.prepare(
+      `INSERT INTO _prisma_migrations (id, checksum, migration_name, finished_at, applied_steps_count)
+       VALUES (?, ?, ?, datetime('now'), 1)`
+    ).run(crypto.randomUUID(), calculateChecksum(migration3Sql), migration3!.folderName);
+    db.close();
+    db = null;
+
+    // Without ignoreOrderMismatch: should fail with order_mismatch
+    const bad = await applyPrismaMigrations({
+      migrationsFolder: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      databasePath: DB_PATH,
+    });
+    expect(bad.coherenceErrors).toBeDefined();
+    expect(bad.coherenceErrors![0].type).toBe("order_mismatch");
+
+    // With ignoreOrderMismatch: migration2 should be applied despite the gap
+    const result = await applyPrismaMigrations({
+      migrationsFolder: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      databasePath: DB_PATH,
+      ignoreOrderMismatch: true,
+    });
+
+    expect(result.coherenceErrors).toBeUndefined();
+    expect(result.applied.length).toBe(1);
+    expect(result.applied[0].migrationName).toBe(migration2!.folderName);
+    expect(result.failed).toBeUndefined();
+
+    // Post table should now exist in the database
+    db = new Database(DB_PATH);
+    const tables = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '\\_%' ESCAPE '\\'"
+    ).all() as { name: string }[];
+    db.close();
+    db = null;
+    expect(tables.map((t) => t.name)).toContain("Post");
+  }, 25000);
+
+  it("should apply multiple unapplied migrations out of order when ignoreOrderMismatch is true", async () => {
+    // Four migrations. Apply migration1 and fake-mark migration4.
+    // migrations 2 and 3 are both unapplied with a "later" migration applied.
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+      model A { id Int @id }
+    `);
+    const migration1 = await createPrismaMigration({
+      name: "create_a", schemaPath: SCHEMA_PATH, outputPath: MIGRATIONS_PATH, dialect: "sqlite",
+    });
+
+    await new Promise((r) => setTimeout(r, 1100));
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+      model A { id Int @id }
+      model B { id Int @id }
+    `);
+    const migration2 = await createPrismaMigration({
+      name: "create_b", schemaPath: SCHEMA_PATH, outputPath: MIGRATIONS_PATH, dialect: "sqlite",
+    });
+
+    await new Promise((r) => setTimeout(r, 1100));
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+      model A { id Int @id }
+      model B { id Int @id }
+      model C { id Int @id }
+    `);
+    const migration3 = await createPrismaMigration({
+      name: "create_c", schemaPath: SCHEMA_PATH, outputPath: MIGRATIONS_PATH, dialect: "sqlite",
+    });
+
+    await new Promise((r) => setTimeout(r, 1100));
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+      model A { id Int @id }
+      model B { id Int @id }
+      model C { id Int @id }
+      model D { id Int @id }
+    `);
+    const migration4 = await createPrismaMigration({
+      name: "create_d", schemaPath: SCHEMA_PATH, outputPath: MIGRATIONS_PATH, dialect: "sqlite",
+    });
+
+    // Apply only migration1
+    await applyPrismaMigrations({
+      migrationsFolder: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      databasePath: DB_PATH,
+      targetMigration: migration1!.folderName,
+    });
+
+    // Fake-mark migration4 as applied
+    const migration4Sql = fs.readFileSync(
+      path.join(MIGRATIONS_PATH, migration4!.folderName, "migration.sql"),
+      "utf-8"
+    );
+    db = new Database(DB_PATH);
+    db.prepare(
+      `INSERT INTO _prisma_migrations (id, checksum, migration_name, finished_at, applied_steps_count)
+       VALUES (?, ?, ?, datetime('now'), 1)`
+    ).run(crypto.randomUUID(), calculateChecksum(migration4Sql), migration4!.folderName);
+    db.close();
+    db = null;
+
+    // With ignoreOrderMismatch: migrations 2 and 3 should both be applied
+    const result = await applyPrismaMigrations({
+      migrationsFolder: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      databasePath: DB_PATH,
+      ignoreOrderMismatch: true,
+    });
+
+    expect(result.coherenceErrors).toBeUndefined();
+    expect(result.applied.length).toBe(2);
+    expect(result.applied.map((a) => a.migrationName)).toContain(migration2!.folderName);
+    expect(result.applied.map((a) => a.migrationName)).toContain(migration3!.folderName);
+    expect(result.failed).toBeUndefined();
+
+    // B and C tables should now exist
+    db = new Database(DB_PATH);
+    const tables = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '\\_%' ESCAPE '\\'"
+    ).all() as { name: string }[];
+    db.close();
+    db = null;
+    expect(tables.map((t) => t.name)).toContain("B");
+    expect(tables.map((t) => t.name)).toContain("C");
+  }, 40000);
 
   it("should fail when checksum in database differs from log", async () => {
     writeSchema(`
