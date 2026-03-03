@@ -314,7 +314,7 @@ export function compileAlterColumn(
   tableName: string,
   columnName: string,
   changes: {
-    setType?: string;
+    setType?: Pick<SchemaColumn, "type" | "isEnum" | "isArray" | "isAutoincrement">;
     setNotNull?: boolean;
     dropNotNull?: boolean;
     setDefault?: string | number | boolean;
@@ -326,13 +326,24 @@ export function compileAlterColumn(
   const statements: string[] = [];
 
   if (changes.setType) {
-    const columnType = mapColumnType(changes.setType, options.dialect);
-    statements.push(
-      db.schema
-        .alterTable(tableName)
-        .alterColumn(columnName, (ac) => ac.setDataType(columnType as any))
-        .compile().sql + ";"
-    );
+    const col = changes.setType;
+    const columnType = col.isEnum
+      ? mapColumnTypeWithEnum(col as SchemaColumn, options.dialect)
+      : mapColumnType(col.type, options.dialect, { isArray: col.isArray, isAutoincrement: col.isAutoincrement });
+    if (col.isEnum && options.dialect === "postgres") {
+      // PostgreSQL cannot automatically cast between enum types (or from text to enum).
+      // Use a USING clause that casts via text so compatible values survive the migration.
+      statements.push(
+        `ALTER TABLE "${tableName}" ALTER COLUMN "${columnName}" TYPE ${columnType} USING "${columnName}"::text::${columnType};`
+      );
+    } else {
+      statements.push(
+        db.schema
+          .alterTable(tableName)
+          .alterColumn(columnName, (ac) => ac.setDataType(sql.raw(columnType) as any))
+          .compile().sql + ";"
+      );
+    }
   }
 
   if (changes.setNotNull) {

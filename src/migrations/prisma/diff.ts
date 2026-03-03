@@ -687,19 +687,33 @@ export function buildSqlStatements(
     const defaultChanged = change.previous.default !== change.current.default;
 
     if (typeChanged) {
+      // In PostgreSQL, an existing default on an enum column blocks the TYPE change
+      // because the old default value can't be automatically cast to the new type.
+      // Drop the default first; the defaultChanged block below will re-apply the new one.
+      if (change.current.isEnum && dialect === "postgres" && change.previous.default !== undefined) {
+        up.push(
+          ...compileAlterColumn(change.tableName, change.columnName, { dropDefault: true }, compileOpts)
+        );
+      }
       up.push(
         ...compileAlterColumn(
           change.tableName,
           change.columnName,
-          { setType: change.current.type },
+          { setType: change.current },
           compileOpts
         )
       );
+      // Mirror the drop-default in the down migration too
+      if (change.previous.isEnum && dialect === "postgres" && change.current.default !== undefined) {
+        down.unshift(
+          ...compileAlterColumn(change.tableName, change.columnName, { dropDefault: true }, compileOpts)
+        );
+      }
       down.unshift(
         ...compileAlterColumn(
           change.tableName,
           change.columnName,
-          { setType: change.previous.type },
+          { setType: change.previous },
           compileOpts
         )
       );

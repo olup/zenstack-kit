@@ -805,6 +805,280 @@ describe("PostgreSQL migrations with testcontainers", () => {
       expect(comments.rows[0].status).toBe("ARCHIVED");
     });
 
+    it("should handle enum used in multiple models with different field names", async () => {
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        enum Status {
+          DRAFT
+          PUBLISHED
+          ARCHIVED
+        }
+
+        model Post {
+          id     Int    @id @default(autoincrement())
+          title  String
+          status Status @default(DRAFT)
+        }
+
+        model Comment {
+          id    Int    @id @default(autoincrement())
+          text  String
+          state Status @default(DRAFT)
+        }
+      `);
+
+      const migration = await createPrismaMigration({
+        name: "shared_enum_diff_fields",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+
+      expect(migration).not.toBeNull();
+      // Should only create the enum once even though it's used on different field names
+      const createTypeCount = (migration!.sql.match(/CREATE TYPE "Status"/g) || []).length;
+      expect(createTypeCount).toBe(1);
+
+      await applyPrismaMigrations({
+        migrationsFolder: MIGRATIONS_PATH,
+        dialect: "postgres",
+        connectionUrl: pgContext.connectionUrl,
+      });
+
+      // Both tables should use the same enum type on different column names
+      await pgContext.pool.query(`INSERT INTO "Post" (title, status) VALUES ('Test', 'PUBLISHED')`);
+      await pgContext.pool.query(`INSERT INTO "Comment" (text, state) VALUES ('Test', 'ARCHIVED')`);
+
+      const posts = await pgContext.pool.query(`SELECT status FROM "Post"`);
+      const comments = await pgContext.pool.query(`SELECT state FROM "Comment"`);
+      expect(posts.rows[0].status).toBe("PUBLISHED");
+      expect(comments.rows[0].state).toBe("ARCHIVED");
+
+      await new Promise((r) => setTimeout(r, 1100));
+
+      // Remove Comment — the enum must be preserved because Post still uses it
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        enum Status {
+          DRAFT
+          PUBLISHED
+          ARCHIVED
+        }
+
+        model Post {
+          id     Int    @id @default(autoincrement())
+          title  String
+          status Status @default(DRAFT)
+        }
+      `);
+
+      const migration2 = await createPrismaMigration({
+        name: "drop_comment_keep_enum",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+
+      expect(migration2).not.toBeNull();
+      expect(migration2!.sql.toLowerCase()).toContain('drop table if exists "comment"');
+      // The enum is still used by Post.status — it must NOT be dropped
+      expect(migration2!.sql).not.toContain('DROP TYPE IF EXISTS "Status"');
+
+      const result = await applyPrismaMigrations({
+        migrationsFolder: MIGRATIONS_PATH,
+        dialect: "postgres",
+        connectionUrl: pgContext.connectionUrl,
+      });
+
+      expect(result.applied.length).toBe(1);
+      expect(result.failed).toBeUndefined();
+
+      // Post should still accept enum values
+      await pgContext.pool.query(`INSERT INTO "Post" (title, status) VALUES ('After drop', 'ARCHIVED')`);
+      const posts2 = await pgContext.pool.query(`SELECT status FROM "Post" ORDER BY id`);
+      expect(posts2.rows[1].status).toBe("ARCHIVED");
+    });
+
+    it("should handle changing a field from one enum type to another (same column name)", async () => {
+      // Use the same field name so it generates ALTER COLUMN (not DROP + ADD)
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        enum Priority {
+          LOW
+          HIGH
+        }
+
+        enum Status {
+          DRAFT
+          PUBLISHED
+        }
+
+        model Post {
+          id     Int      @id @default(autoincrement())
+          title  String
+          kind   Priority @default(LOW)
+        }
+      `);
+
+      await createPrismaMigration({
+        name: "init",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+
+      await applyPrismaMigrations({
+        migrationsFolder: MIGRATIONS_PATH,
+        dialect: "postgres",
+        connectionUrl: pgContext.connectionUrl,
+      });
+
+      await new Promise((r) => setTimeout(r, 1100));
+
+      // Change the type of the same column from Priority to Status
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        enum Priority {
+          LOW
+          HIGH
+        }
+
+        enum Status {
+          DRAFT
+          PUBLISHED
+        }
+
+        model Post {
+          id    Int    @id @default(autoincrement())
+          title String
+          kind  Status @default(DRAFT)
+        }
+      `);
+
+      const migration = await createPrismaMigration({
+        name: "change_enum_type",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+
+      expect(migration).not.toBeNull();
+      // Column type should be altered to the new enum type, not to "text"
+      expect(migration!.sql).toContain('"Status"');
+
+      const result = await applyPrismaMigrations({
+        migrationsFolder: MIGRATIONS_PATH,
+        dialect: "postgres",
+        connectionUrl: pgContext.connectionUrl,
+      });
+
+      expect(result.applied.length).toBe(1);
+      expect(result.failed).toBeUndefined();
+
+      await pgContext.pool.query(`INSERT INTO "Post" (title, kind) VALUES ('Test', 'PUBLISHED')`);
+      const posts = await pgContext.pool.query(`SELECT kind FROM "Post" ORDER BY id`);
+      expect(posts.rows[0].kind).toBe("PUBLISHED");
+    });
+
+    it("should handle renaming an enum type", async () => {
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        enum Status {
+          DRAFT
+          PUBLISHED
+        }
+
+        model Post {
+          id     Int    @id @default(autoincrement())
+          title  String
+          status Status @default(DRAFT)
+        }
+      `);
+
+      await createPrismaMigration({
+        name: "init",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+
+      await applyPrismaMigrations({
+        migrationsFolder: MIGRATIONS_PATH,
+        dialect: "postgres",
+        connectionUrl: pgContext.connectionUrl,
+      });
+
+      await pgContext.pool.query(`INSERT INTO "Post" (title, status) VALUES ('Test', 'PUBLISHED')`);
+
+      await new Promise((r) => setTimeout(r, 1100));
+
+      // Rename Status → PostStatus
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        enum PostStatus {
+          DRAFT
+          PUBLISHED
+        }
+
+        model Post {
+          id         Int        @id @default(autoincrement())
+          title      String
+          postStatus PostStatus @default(DRAFT)
+        }
+      `);
+
+      const migration = await createPrismaMigration({
+        name: "rename_enum",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+
+      expect(migration).not.toBeNull();
+      // New enum type should be created and old one dropped
+      expect(migration!.sql).toContain('CREATE TYPE "PostStatus"');
+      expect(migration!.sql).toContain('DROP TYPE IF EXISTS "Status"');
+      // Column should be altered to the new enum type, not to "text"
+      expect(migration!.sql.toLowerCase()).toContain('"PostStatus"'.toLowerCase());
+
+      const result = await applyPrismaMigrations({
+        migrationsFolder: MIGRATIONS_PATH,
+        dialect: "postgres",
+        connectionUrl: pgContext.connectionUrl,
+      });
+
+      expect(result.applied.length).toBe(1);
+      expect(result.failed).toBeUndefined();
+
+      await pgContext.pool.query(`INSERT INTO "Post" (title, "postStatus") VALUES ('After', 'PUBLISHED')`);
+      const posts = await pgContext.pool.query(`SELECT "postStatus" FROM "Post" ORDER BY id`);
+      expect(posts.rows[1].postStatus).toBe("PUBLISHED");
+    });
+
     it("should preserve existing rows when adding enum values", async () => {
       // First migration: create enum and insert data
       writeSchema(`
