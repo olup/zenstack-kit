@@ -38,6 +38,7 @@ export {
   appendToMigrationLog,
   getMigrationLogPath,
   calculateChecksum,
+  rehashWithSameVersion,
   detectPotentialRenames,
   type PrismaMigrationOptions,
   type PrismaMigration,

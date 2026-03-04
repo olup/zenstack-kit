@@ -19,6 +19,7 @@ import {
   initializeSnapshot,
   createInitialMigration,
   calculateChecksum,
+  rehashWithSameVersion,
   detectPotentialRenames,
 } from "../src/migrations/prisma.js";
 
@@ -1304,7 +1305,7 @@ describe("Prisma migrations - migrations table configuration", () => {
     expect(records.length).toBe(1);
     expect(records[0].migration_name).toBe(migration!.folderName);
     expect(records[0].checksum).toBeDefined();
-    expect(records[0].checksum.length).toBe(64); // SHA256 hex is 64 chars
+    expect(records[0].checksum).toMatch(/^v2:[0-9a-f]{64}$/); // v2 format
     expect(records[0].finished_at).toBeDefined();
     expect(records[0].applied_steps_count).toBe(1);
     expect(records[0].rolled_back_at).toBeNull();
@@ -1627,7 +1628,7 @@ describe("Prisma migrations - migration log", () => {
     const expectedChecksum = calculateChecksum(sqlContent);
 
     expect(entries[0].checksum).toBe(expectedChecksum);
-    expect(entries[0].checksum.length).toBe(64); // SHA256 hex
+    expect(entries[0].checksum).toMatch(/^v2:[0-9a-f]{64}$/); // v2 format
   });
 
   it("should read/write migration log correctly", async () => {
@@ -1674,7 +1675,7 @@ describe("Prisma migrations - migration log", () => {
     const scanned = await scanMigrationFolders(MIGRATIONS_PATH);
     expect(scanned.length).toBe(1);
     expect(scanned[0].name).toContain("init");
-    expect(scanned[0].checksum.length).toBe(64);
+    expect(scanned[0].checksum).toMatch(/^v2:[0-9a-f]{64}$/);
   });
 
   it("should scan migration folders without a name suffix", async () => {
@@ -1687,6 +1688,97 @@ describe("Prisma migrations - migration log", () => {
 
     const scanned = await scanMigrationFolders(MIGRATIONS_PATH);
     expect(scanned).toEqual([{ name: folderName, checksum: calculateChecksum(sqlContent) }]);
+  });
+});
+
+describe("calculateChecksum / rehashWithSameVersion", () => {
+  it("should produce v2: prefixed checksum", () => {
+    expect(calculateChecksum("CREATE TABLE user (id INTEGER);")).toMatch(/^v2:[0-9a-f]{64}$/);
+  });
+
+  it("should be stable across comment changes", () => {
+    const base = "CREATE TABLE user (id INTEGER);";
+    const withComments = "-- header\nCREATE TABLE user (id INTEGER); /* trailing */";
+    expect(calculateChecksum(base)).toBe(calculateChecksum(withComments));
+  });
+
+  it("should be stable across whitespace changes", () => {
+    const base = "CREATE TABLE user (id INTEGER);";
+    const reformatted = "CREATE  TABLE\n  user\t(id\n INTEGER);";
+    expect(calculateChecksum(base)).toBe(calculateChecksum(reformatted));
+  });
+
+  it("should produce different checksums for different SQL", () => {
+    expect(calculateChecksum("CREATE TABLE user (id INTEGER);")).not.toBe(
+      calculateChecksum("CREATE TABLE post (id INTEGER);")
+    );
+  });
+
+  it("rehashWithSameVersion preserves v1 (raw) for existing v1 checksums", () => {
+    const sql = "CREATE TABLE user (id INTEGER);";
+    const v1 = crypto.createHash("sha256").update(sql).digest("hex");
+    expect(rehashWithSameVersion(sql, v1)).toBe(v1);
+  });
+
+  it("rehashWithSameVersion uses v2 for existing v2 checksums", () => {
+    const sql = "CREATE TABLE user (id INTEGER);";
+    const v2 = calculateChecksum(sql);
+    expect(rehashWithSameVersion(sql, v2)).toBe(v2);
+  });
+});
+
+describe("Prisma migrations - v1 checksum backward compatibility", () => {
+  beforeAll(() => {
+    cleanup();
+    fs.mkdirSync(TEST_DIR, { recursive: true });
+  });
+
+  afterAll(() => cleanup());
+
+  beforeEach(() => {
+    if (fs.existsSync(DB_PATH)) fs.unlinkSync(DB_PATH);
+    if (fs.existsSync(MIGRATIONS_PATH)) fs.rmSync(MIGRATIONS_PATH, { recursive: true });
+  });
+
+  it("should apply a migration whose log entry has a v1 checksum", async () => {
+    const folderName = "20250101000000_init";
+    const folderPath = path.join(MIGRATIONS_PATH, folderName);
+    fs.mkdirSync(folderPath, { recursive: true });
+
+    const sqlContent = "CREATE TABLE user (id INTEGER PRIMARY KEY);";
+    fs.writeFileSync(path.join(folderPath, "migration.sql"), sqlContent, "utf-8");
+
+    // Write a v1 (raw hex) checksum to the log
+    const v1Checksum = crypto.createHash("sha256").update(sqlContent).digest("hex");
+    await writeMigrationLog(MIGRATIONS_PATH, [{ name: folderName, checksum: v1Checksum }]);
+
+    const result = await applyPrismaMigrations({
+      migrationsFolder: MIGRATIONS_PATH,
+      dialect: "sqlite",
+      databasePath: DB_PATH,
+    });
+
+    expect(result.failed).toBeUndefined();
+    expect(result.applied.length).toBe(1);
+
+    // Log entry should still have v1 checksum (not upgraded)
+    const entries = await readMigrationLog(MIGRATIONS_PATH);
+    expect(entries[0].checksum).toBe(v1Checksum);
+  });
+
+  it("scanMigrationFolders with existingEntries preserves v1 checksums", async () => {
+    const folderName = "20250101000000_init";
+    const folderPath = path.join(MIGRATIONS_PATH, folderName);
+    fs.mkdirSync(folderPath, { recursive: true });
+
+    const sqlContent = "CREATE TABLE user (id INTEGER PRIMARY KEY);";
+    fs.writeFileSync(path.join(folderPath, "migration.sql"), sqlContent, "utf-8");
+
+    const v1Checksum = crypto.createHash("sha256").update(sqlContent).digest("hex");
+    const existingEntries = new Map([{ name: folderName, checksum: v1Checksum }].map((e) => [e.name, e]));
+
+    const scanned = await scanMigrationFolders(MIGRATIONS_PATH, existingEntries);
+    expect(scanned[0].checksum).toBe(v1Checksum);
   });
 });
 
@@ -1738,10 +1830,10 @@ describe("Prisma migrations - checksum verification", () => {
       dialect: "sqlite",
     });
 
-    // Tamper with the migration file
+    // Tamper with meaningful SQL (comment-only changes are ignored by v2 checksums)
     const sqlPath = path.join(migration!.folderPath, "migration.sql");
     const originalContent = fs.readFileSync(sqlPath, "utf-8");
-    fs.writeFileSync(sqlPath, originalContent + "\n-- Tampered!", "utf-8");
+    fs.writeFileSync(sqlPath, originalContent + "\nSELECT 1;", "utf-8");
 
     const result = await applyPrismaMigrations({
       migrationsFolder: MIGRATIONS_PATH,
@@ -1776,7 +1868,7 @@ describe("Prisma migrations - checksum verification", () => {
 
     const sqlPath = path.join(migration!.folderPath, "migration.sql");
     const originalContent = fs.readFileSync(sqlPath, "utf-8");
-    const updatedContent = originalContent + "\n-- Tampered!";
+    const updatedContent = originalContent + "\nSELECT 1;";
     fs.writeFileSync(sqlPath, updatedContent, "utf-8");
 
     const result = await applyPrismaMigrations({

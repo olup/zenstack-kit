@@ -26,6 +26,7 @@ export {
   scanMigrationFolders,
   getMigrationLogPath,
   calculateChecksum,
+  rehashWithSameVersion,
   type MigrationLogEntry,
 } from "./prisma/log.js";
 

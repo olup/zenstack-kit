@@ -13,10 +13,29 @@ const MIGRATION_LOG_HEADER = `# zenstack-kit migration log
 # Format: <migration_name> <checksum>
 `;
 
+function normalizeSQL(sql: string): string {
+  return sql
+    .replace(/--[^\n]*/g, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /**
- * Calculate SHA256 checksum of migration SQL
+ * Calculate SHA256 checksum of migration SQL (v2: normalized, whitespace/comment-insensitive)
  */
 export function calculateChecksum(sql: string): string {
+  return "v2:" + crypto.createHash("sha256").update(normalizeSQL(sql)).digest("hex");
+}
+
+/**
+ * Recompute checksum using the same version as an existing stored checksum.
+ * v1 (plain hex): raw SQL. v2 (v2:<hex>): normalized SQL.
+ */
+export function rehashWithSameVersion(sql: string, existingChecksum: string): string {
+  if (existingChecksum.startsWith("v2:")) {
+    return calculateChecksum(sql);
+  }
   return crypto.createHash("sha256").update(sql).digest("hex");
 }
 
@@ -84,9 +103,13 @@ export async function appendToMigrationLog(outputPath: string, entry: MigrationL
 }
 
 /**
- * Scan migration folders and compute checksums for each
+ * Scan migration folders and compute checksums for each.
+ * Pass existingEntries to preserve checksum versions for already-tracked migrations.
  */
-export async function scanMigrationFolders(outputPath: string): Promise<MigrationLogEntry[]> {
+export async function scanMigrationFolders(
+  outputPath: string,
+  existingEntries?: Map<string, MigrationLogEntry>
+): Promise<MigrationLogEntry[]> {
   const entries: MigrationLogEntry[] = [];
 
   try {
@@ -100,7 +123,10 @@ export async function scanMigrationFolders(outputPath: string): Promise<Migratio
       const sqlPath = path.join(outputPath, folderName, "migration.sql");
       try {
         const sqlContent = await fs.readFile(sqlPath, "utf-8");
-        const checksum = calculateChecksum(sqlContent);
+        const existing = existingEntries?.get(folderName);
+        const checksum = existing
+          ? rehashWithSameVersion(sqlContent, existing.checksum)
+          : calculateChecksum(sqlContent);
         entries.push({ name: folderName, checksum });
       } catch {
         // Skip folders without migration.sql

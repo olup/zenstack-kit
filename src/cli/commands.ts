@@ -23,6 +23,7 @@ import {
   writeMigrationLog,
   getMigrationLogPath,
   calculateChecksum,
+  rehashWithSameVersion,
   initializeSnapshot,
   createInitialMigration,
   detectPotentialRenames,
@@ -52,6 +53,7 @@ export interface CommandOptions {
   empty?: boolean;
   updateSnapshot?: boolean;
   strict?: boolean;
+  ignoreOrderMismatch?: boolean;
 }
 
 export interface CommandContext {
@@ -326,6 +328,7 @@ export async function runMigrateApply(ctx: CommandContext): Promise<void> {
     markApplied: ctx.options.markApplied,
     strict,
     targetMigration: ctx.options.migration,
+    ignoreOrderMismatch: ctx.options.ignoreOrderMismatch,
   });
 
   // Handle coherence errors
@@ -383,10 +386,14 @@ export async function runMigrateRehash(ctx: CommandContext): Promise<void> {
     }
 
     const sqlContent = await fs.promises.readFile(sqlPath, "utf-8");
-    const checksum = calculateChecksum(sqlContent);
 
     const entries = await readMigrationLog(outputPath);
     const existingIndex = entries.findIndex((e) => e.name === targetMigration);
+    const checksum =
+      existingIndex !== -1
+        ? rehashWithSameVersion(sqlContent, entries[existingIndex].checksum)
+        : calculateChecksum(sqlContent);
+
     if (existingIndex === -1) {
       entries.push({ name: targetMigration, checksum });
     } else {
@@ -405,7 +412,9 @@ export async function runMigrateRehash(ctx: CommandContext): Promise<void> {
     return;
   }
 
-  const migrations = await scanMigrationFolders(outputPath);
+  const existingLog = await readMigrationLog(outputPath);
+  const existingByName = new Map(existingLog.map((e) => [e.name, e]));
+  const migrations = await scanMigrationFolders(outputPath, existingByName);
   if (migrations.length === 0) {
     ctx.log("warning", "No migrations found.");
     return;
@@ -448,8 +457,10 @@ export async function runInit(ctx: CommandContext): Promise<void> {
 
     ctx.log("info", "Reinitializing...");
 
+    const existingLogBeforeReinit = await readMigrationLog(outputPath);
+    const existingByNameBeforeReinit = new Map(existingLogBeforeReinit.map((e) => [e.name, e]));
     const result = await initializeSnapshot({ schemaPath, outputPath });
-    const migrations = await scanMigrationFolders(outputPath);
+    const migrations = await scanMigrationFolders(outputPath, existingByNameBeforeReinit);
     await writeMigrationLog(outputPath, migrations);
 
     ctx.log("success", `Snapshot recreated: ${result.snapshotPath}`);

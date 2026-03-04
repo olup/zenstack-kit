@@ -103,6 +103,8 @@ function parseArgs(): { command?: Command; options: CommandOptions } {
       options.markApplied = true;
     } else if (arg === "--strict") {
       options.strict = true;
+    } else if (arg === "--ignore-order") {
+      options.ignoreOrderMismatch = true;
     } else if (arg === "--empty") {
       options.empty = true;
     } else if (arg === "--update-snapshot") {

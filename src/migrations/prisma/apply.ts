@@ -4,7 +4,7 @@ import * as crypto from "crypto";
 import { sql } from "kysely";
 import type { KyselyDialect } from "../../sql/kysely-adapter.js";
 import { createKyselyAdapter } from "../../sql/kysely-adapter.js";
-import { calculateChecksum, readMigrationLog, writeMigrationLog, type MigrationLogEntry } from "./log.js";
+import { calculateChecksum, rehashWithSameVersion, readMigrationLog, writeMigrationLog, type MigrationLogEntry } from "./log.js";
 
 export interface ApplyPrismaMigrationsOptions {
   /** Migrations folder path */
@@ -25,6 +25,8 @@ export interface ApplyPrismaMigrationsOptions {
   strict?: boolean;
   /** Apply a single migration by name */
   targetMigration?: string;
+  /** Apply all unapplied migrations regardless of gaps in applied history */
+  ignoreOrderMismatch?: boolean;
 }
 
 export interface ApplyPrismaMigrationsResult {
@@ -89,7 +91,7 @@ async function ensureMigrationsTable(
     await sql`
       CREATE TABLE IF NOT EXISTS ${sql.raw(`"${schema}"."${tableName}"`)} (
         id VARCHAR(36) PRIMARY KEY,
-        checksum VARCHAR(64) NOT NULL,
+        checksum VARCHAR(128) NOT NULL,
         finished_at TIMESTAMPTZ,
         migration_name VARCHAR(255) NOT NULL,
         logs TEXT,
@@ -102,7 +104,7 @@ async function ensureMigrationsTable(
     await sql`
       CREATE TABLE IF NOT EXISTS ${sql.raw(`\`${tableName}\``)} (
         id VARCHAR(36) PRIMARY KEY,
-        checksum VARCHAR(64) NOT NULL,
+        checksum VARCHAR(128) NOT NULL,
         finished_at DATETIME,
         migration_name VARCHAR(255) NOT NULL,
         logs TEXT,
@@ -186,7 +188,8 @@ async function recordMigration(
 function validateMigrationCoherence(
   appliedMigrations: Map<string, PrismaMigrationsRow>,
   migrationLog: MigrationLogEntry[],
-  migrationFolders: string[]
+  migrationFolders: string[],
+  ignoreOrderMismatch = false
 ): MigrationCoherenceResult {
   const errors: MigrationCoherenceError[] = [];
 
@@ -223,6 +226,7 @@ function validateMigrationCoherence(
 
   // Check 2: Applied migrations should be a continuous prefix of the log
   // i.e., if migration N is applied, all migrations before N in the log must also be applied
+  // This check can be skipped with ignoreOrderMismatch to allow applying out-of-order migrations.
   let lastAppliedIndex = -1;
   for (let i = 0; i < migrationLog.length; i++) {
     const logEntry = migrationLog[i];
@@ -230,7 +234,7 @@ function validateMigrationCoherence(
 
     if (isApplied) {
       // Check for gaps: if this is applied, all previous should be applied
-      if (lastAppliedIndex !== i - 1) {
+      if (!ignoreOrderMismatch && lastAppliedIndex !== i - 1) {
         // There's a gap - find the missing migrations
         for (let j = lastAppliedIndex + 1; j < i; j++) {
           const missing = migrationLog[j];
@@ -365,7 +369,8 @@ export async function applyPrismaMigrations(
     const coherence = validateMigrationCoherence(
       appliedMigrations,
       migrationLog,
-      migrationFoldersWithSql
+      migrationFoldersWithSql,
+      options.ignoreOrderMismatch
     );
     if (!coherence.isCoherent) {
       return {
@@ -429,10 +434,14 @@ export async function applyPrismaMigrations(
         continue; // Skip if no migration.sql
       }
 
-      const checksum = calculateChecksum(sqlContent);
+      // Compute checksum using same version as existing log entry, or v2 for new entries
+      const logEntryIndex = logIndex.get(folderName);
+      const checksum =
+        logEntryIndex !== undefined
+          ? rehashWithSameVersion(sqlContent, migrationLog[logEntryIndex].checksum)
+          : calculateChecksum(sqlContent);
 
       // Verify or update checksum against migration log (pending migrations only)
-      const logEntryIndex = logIndex.get(folderName);
       if (logEntryIndex === undefined) {
         if (options.strict) {
           result.failed = {
