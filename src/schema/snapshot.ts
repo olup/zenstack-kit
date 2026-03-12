@@ -34,11 +34,15 @@ export interface SchemaIndex {
   columns: string[];
 }
 
+export type ReferentialAction = "Cascade" | "Restrict" | "SetNull" | "SetDefault" | "NoAction";
+
 export interface SchemaForeignKey {
   name: string;
   columns: string[];
   referencedTable: string;
   referencedColumns: string[];
+  onDelete?: ReferentialAction;
+  onUpdate?: ReferentialAction;
 }
 
 export interface SchemaTable {
@@ -239,9 +243,20 @@ function getFieldType(field: DataField): { type: string; isRelation: boolean; is
   return { type: field.type.type ?? "String", isRelation: false, isEnum: false };
 }
 
+function getAttributeRefArg(attr: AttributeNode | undefined, name: string): string | undefined {
+  if (!attr) return undefined;
+  const arg = attr.args.find((item) => item.$resolvedParam?.name === name);
+  if (!arg?.value) return undefined;
+  // Enum reference: e.g. Cascade, SetNull
+  if (arg.value.$type === "ReferenceExpr") {
+    return (arg.value as any).target.$refText as string;
+  }
+  return undefined;
+}
+
 function getRelationFieldNames(
   field: DataField,
-): { fields: string[]; references: string[]; mapName?: string } | null {
+): { fields: string[]; references: string[]; mapName?: string; onDelete?: ReferentialAction; onUpdate?: ReferentialAction } | null {
   const relationAttr = getAttribute(field, "@relation");
   if (!relationAttr) return null;
 
@@ -250,7 +265,9 @@ function getRelationFieldNames(
   if (!fields || !references) return null;
 
   const mapName = getAttributeStringArg(relationAttr, ["map", "name"]);
-  return { fields, references, mapName };
+  const onDelete = getAttributeRefArg(relationAttr, "onDelete") as ReferentialAction | undefined;
+  const onUpdate = getAttributeRefArg(relationAttr, "onUpdate") as ReferentialAction | undefined;
+  return { fields, references, mapName, onDelete, onUpdate };
 }
 
 function buildFieldNameMap(model: DataModel): Map<string, string> {
@@ -383,7 +400,7 @@ function parseModel(model: DataModel): SchemaTable {
     );
     const columnNames = relation.fields.map((name) => fieldNameMap.get(name) ?? name);
 
-    foreignKeys.push({
+    const fk: SchemaForeignKey = {
       name: buildForeignKeyName(
         tableName,
         columnNames,
@@ -394,7 +411,10 @@ function parseModel(model: DataModel): SchemaTable {
       columns: columnNames,
       referencedTable,
       referencedColumns: referencedColumnNames,
-    });
+    };
+    if (relation.onDelete) fk.onDelete = relation.onDelete;
+    if (relation.onUpdate) fk.onUpdate = relation.onUpdate;
+    foreignKeys.push(fk);
   }
 
   const sortedColumns = columns.sort((a, b) => a.name.localeCompare(b.name));

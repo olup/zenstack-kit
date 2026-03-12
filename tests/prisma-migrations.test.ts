@@ -3305,3 +3305,388 @@ describe("@json attribute on custom types", () => {
     expect(second).toBeNull();
   });
 });
+
+describe("Prisma migrations - referential actions (cascade)", () => {
+  beforeAll(() => {
+    cleanup();
+  });
+
+  afterAll(() => {
+    cleanup();
+  });
+
+  beforeEach(() => {
+    cleanup();
+    fs.mkdirSync(TEST_DIR, { recursive: true });
+  });
+
+  it("should include ON DELETE CASCADE in FK constraint", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id    Int    @id
+        posts Post[]
+      }
+
+      model Post {
+        id       Int  @id
+        authorId Int
+        author   User @relation(fields: [authorId], references: [id], onDelete: Cascade)
+      }
+    `);
+
+    const migration = await createPrismaMigration({
+      name: "cascade_delete",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    expect(migration).not.toBeNull();
+    expect(migration!.sql.toLowerCase()).toContain("on delete cascade");
+  });
+
+  it("should include ON DELETE SET NULL in FK constraint", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id    Int    @id
+        posts Post[]
+      }
+
+      model Post {
+        id       Int  @id
+        authorId Int?
+        author   User? @relation(fields: [authorId], references: [id], onDelete: SetNull)
+      }
+    `);
+
+    const migration = await createPrismaMigration({
+      name: "set_null",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    expect(migration).not.toBeNull();
+    expect(migration!.sql.toLowerCase()).toContain("on delete set null");
+  });
+
+  it("should include ON DELETE RESTRICT in FK constraint", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id    Int    @id
+        posts Post[]
+      }
+
+      model Post {
+        id       Int  @id
+        authorId Int
+        author   User @relation(fields: [authorId], references: [id], onDelete: Restrict)
+      }
+    `);
+
+    const migration = await createPrismaMigration({
+      name: "restrict_delete",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    expect(migration).not.toBeNull();
+    expect(migration!.sql.toLowerCase()).toContain("on delete restrict");
+  });
+
+  it("should include ON DELETE NO ACTION in FK constraint", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id    Int    @id
+        posts Post[]
+      }
+
+      model Post {
+        id       Int  @id
+        authorId Int
+        author   User @relation(fields: [authorId], references: [id], onDelete: NoAction)
+      }
+    `);
+
+    const migration = await createPrismaMigration({
+      name: "no_action",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    expect(migration).not.toBeNull();
+    expect(migration!.sql.toLowerCase()).toContain("on delete no action");
+  });
+
+  it("should include ON UPDATE CASCADE in FK constraint", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id    Int    @id
+        posts Post[]
+      }
+
+      model Post {
+        id       Int  @id
+        authorId Int
+        author   User @relation(fields: [authorId], references: [id], onUpdate: Cascade)
+      }
+    `);
+
+    const migration = await createPrismaMigration({
+      name: "cascade_update",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    expect(migration).not.toBeNull();
+    expect(migration!.sql.toLowerCase()).toContain("on update cascade");
+  });
+
+  it("should support both onDelete and onUpdate in FK constraint", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id    Int    @id
+        posts Post[]
+      }
+
+      model Post {
+        id       Int  @id
+        authorId Int
+        author   User @relation(fields: [authorId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+      }
+    `);
+
+    const migration = await createPrismaMigration({
+      name: "cascade_both",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    expect(migration).not.toBeNull();
+    expect(migration!.sql.toLowerCase()).toContain("on delete cascade");
+    expect(migration!.sql.toLowerCase()).toContain("on update restrict");
+  });
+
+  it("should not include ON DELETE clause when no action is specified", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id    Int    @id
+        posts Post[]
+      }
+
+      model Post {
+        id       Int  @id
+        authorId Int
+        author   User @relation(fields: [authorId], references: [id])
+      }
+    `);
+
+    const migration = await createPrismaMigration({
+      name: "no_cascade",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    expect(migration).not.toBeNull();
+    expect(migration!.sql.toLowerCase()).not.toContain("on delete");
+    expect(migration!.sql.toLowerCase()).not.toContain("on update");
+  });
+
+  it("should generate a migration when onDelete rule is added to an existing FK", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id    Int    @id
+        posts Post[]
+      }
+
+      model Post {
+        id       Int  @id
+        authorId Int
+        author   User @relation(fields: [authorId], references: [id])
+      }
+    `);
+
+    const migration1 = await createPrismaMigration({
+      name: "init",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+    expect(migration1).not.toBeNull();
+    expect(migration1!.sql.toLowerCase()).not.toContain("on delete");
+
+    await new Promise((r) => setTimeout(r, 1100));
+
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id    Int    @id
+        posts Post[]
+      }
+
+      model Post {
+        id       Int  @id
+        authorId Int
+        author   User @relation(fields: [authorId], references: [id], onDelete: Cascade)
+      }
+    `);
+
+    const migration2 = await createPrismaMigration({
+      name: "add_cascade",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    expect(migration2).not.toBeNull();
+    expect(migration2!.sql.toLowerCase()).toContain("on delete cascade");
+  }, 10000);
+
+  it("should generate a migration when onDelete rule changes", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id    Int    @id
+        posts Post[]
+      }
+
+      model Post {
+        id       Int  @id
+        authorId Int
+        author   User @relation(fields: [authorId], references: [id], onDelete: Restrict)
+      }
+    `);
+
+    const migration1 = await createPrismaMigration({
+      name: "init",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+    expect(migration1).not.toBeNull();
+
+    await new Promise((r) => setTimeout(r, 1100));
+
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id    Int    @id
+        posts Post[]
+      }
+
+      model Post {
+        id       Int  @id
+        authorId Int
+        author   User @relation(fields: [authorId], references: [id], onDelete: Cascade)
+      }
+    `);
+
+    const migration2 = await createPrismaMigration({
+      name: "change_to_cascade",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    expect(migration2).not.toBeNull();
+    // FK is dropped and re-created with new cascade rule
+    expect(migration2!.sql.toLowerCase()).toContain("drop constraint");
+    expect(migration2!.sql.toLowerCase()).toContain("on delete cascade");
+  }, 10000);
+
+  it("should not generate a migration when cascade rule is unchanged", async () => {
+    writeSchema(`
+      datasource db {
+        provider = "sqlite"
+        url      = "file:./test.db"
+      }
+
+      model User {
+        id    Int    @id
+        posts Post[]
+      }
+
+      model Post {
+        id       Int  @id
+        authorId Int
+        author   User @relation(fields: [authorId], references: [id], onDelete: Cascade)
+      }
+    `);
+
+    const migration1 = await createPrismaMigration({
+      name: "init",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+    expect(migration1).not.toBeNull();
+
+    await new Promise((r) => setTimeout(r, 1100));
+
+    const migration2 = await createPrismaMigration({
+      name: "no_change",
+      schemaPath: SCHEMA_PATH,
+      outputPath: MIGRATIONS_PATH,
+      dialect: "sqlite",
+    });
+
+    expect(migration2).toBeNull();
+  }, 10000);
+});

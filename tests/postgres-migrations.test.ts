@@ -2126,4 +2126,182 @@ CREATE TABLE "another_table" (
       expect(tableNames).toContain("User");
     });
   });
+
+  describe("Referential actions (cascade)", () => {
+    it("should apply ON DELETE CASCADE and cascade deletes to child rows", async () => {
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        model User {
+          id    Int    @id @default(autoincrement())
+          posts Post[]
+        }
+
+        model Post {
+          id       Int  @id @default(autoincrement())
+          authorId Int
+          author   User @relation(fields: [authorId], references: [id], onDelete: Cascade)
+        }
+      `);
+
+      const migration = await createPrismaMigration({
+        name: "cascade_delete",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+
+      expect(migration).not.toBeNull();
+      expect(migration!.sql.toLowerCase()).toContain("on delete cascade");
+
+      const result = await applyPrismaMigrations({
+        migrationsFolder: MIGRATIONS_PATH,
+        dialect: "postgres",
+        connectionUrl: pgContext.connectionUrl,
+      });
+      expect(result.applied.length).toBe(1);
+      expect(result.failed).toBeUndefined();
+
+      // Insert user and post
+      await pgContext.pool.query(`INSERT INTO "User" (id) VALUES (1)`);
+      await pgContext.pool.query(`INSERT INTO "Post" (id, "authorId") VALUES (10, 1)`);
+
+      // Deleting the user should cascade to posts
+      await pgContext.pool.query(`DELETE FROM "User" WHERE id = 1`);
+
+      const posts = await pgContext.pool.query(`SELECT * FROM "Post"`);
+      expect(posts.rows.length).toBe(0);
+    });
+
+    it("should apply ON DELETE SET NULL and null out FK on parent delete", async () => {
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        model User {
+          id    Int    @id @default(autoincrement())
+          posts Post[]
+        }
+
+        model Post {
+          id       Int  @id @default(autoincrement())
+          authorId Int?
+          author   User? @relation(fields: [authorId], references: [id], onDelete: SetNull)
+        }
+      `);
+
+      const migration = await createPrismaMigration({
+        name: "set_null",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+
+      expect(migration).not.toBeNull();
+      expect(migration!.sql.toLowerCase()).toContain("on delete set null");
+
+      const result = await applyPrismaMigrations({
+        migrationsFolder: MIGRATIONS_PATH,
+        dialect: "postgres",
+        connectionUrl: pgContext.connectionUrl,
+      });
+      expect(result.applied.length).toBe(1);
+      expect(result.failed).toBeUndefined();
+
+      await pgContext.pool.query(`INSERT INTO "User" (id) VALUES (1)`);
+      await pgContext.pool.query(`INSERT INTO "Post" (id, "authorId") VALUES (10, 1)`);
+
+      // Deleting the user should set authorId to NULL
+      await pgContext.pool.query(`DELETE FROM "User" WHERE id = 1`);
+
+      const posts = await pgContext.pool.query(`SELECT "authorId" FROM "Post"`);
+      expect(posts.rows.length).toBe(1);
+      expect(posts.rows[0].authorId).toBeNull();
+    });
+
+    it("should generate a migration when cascade rule changes (Restrict → Cascade)", async () => {
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        model User {
+          id    Int    @id @default(autoincrement())
+          posts Post[]
+        }
+
+        model Post {
+          id       Int  @id @default(autoincrement())
+          authorId Int
+          author   User @relation(fields: [authorId], references: [id], onDelete: Restrict)
+        }
+      `);
+
+      const migration1 = await createPrismaMigration({
+        name: "init",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+      expect(migration1).not.toBeNull();
+
+      await applyPrismaMigrations({
+        migrationsFolder: MIGRATIONS_PATH,
+        dialect: "postgres",
+        connectionUrl: pgContext.connectionUrl,
+      });
+
+      await new Promise((r) => setTimeout(r, 1100));
+
+      writeSchema(`
+        datasource db {
+          provider = "postgresql"
+          url      = env("DATABASE_URL")
+        }
+
+        model User {
+          id    Int    @id @default(autoincrement())
+          posts Post[]
+        }
+
+        model Post {
+          id       Int  @id @default(autoincrement())
+          authorId Int
+          author   User @relation(fields: [authorId], references: [id], onDelete: Cascade)
+        }
+      `);
+
+      const migration2 = await createPrismaMigration({
+        name: "change_to_cascade",
+        schemaPath: SCHEMA_PATH,
+        outputPath: MIGRATIONS_PATH,
+        dialect: "postgres",
+      });
+
+      expect(migration2).not.toBeNull();
+      expect(migration2!.sql.toLowerCase()).toContain("on delete cascade");
+
+      const result2 = await applyPrismaMigrations({
+        migrationsFolder: MIGRATIONS_PATH,
+        dialect: "postgres",
+        connectionUrl: pgContext.connectionUrl,
+      });
+      expect(result2.applied.length).toBe(1);
+      expect(result2.failed).toBeUndefined();
+
+      // Verify cascade now works
+      await pgContext.pool.query(`INSERT INTO "User" (id) VALUES (1)`);
+      await pgContext.pool.query(`INSERT INTO "Post" (id, "authorId") VALUES (10, 1)`);
+      await pgContext.pool.query(`DELETE FROM "User" WHERE id = 1`);
+
+      const posts = await pgContext.pool.query(`SELECT * FROM "Post"`);
+      expect(posts.rows.length).toBe(0);
+    }, 15000);
+  });
 });

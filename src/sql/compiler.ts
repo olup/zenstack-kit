@@ -65,6 +65,18 @@ export interface CompileSqlOptions {
   dialect: KyselyDialect;
 }
 
+/** Map ZenStack PascalCase referential action to Kysely's lowercase format */
+export function toKyselyReferentialAction(action: string): string {
+  const map: Record<string, string> = {
+    Cascade: "cascade",
+    Restrict: "restrict",
+    SetNull: "set null",
+    SetDefault: "set default",
+    NoAction: "no action",
+  };
+  return map[action] ?? action.toLowerCase();
+}
+
 /**
  * Compile a CREATE TABLE statement to SQL
  */
@@ -114,7 +126,12 @@ export function compileCreateTable(
       fk.name,
       fk.columns as any,
       fk.referencedTable,
-      fk.referencedColumns as any
+      fk.referencedColumns as any,
+      (cb) => {
+        if (fk.onDelete) cb = cb.onDelete(toKyselyReferentialAction(fk.onDelete!) as any);
+        if (fk.onUpdate) cb = cb.onUpdate(toKyselyReferentialAction(fk.onUpdate!) as any);
+        return cb;
+      }
     );
   }
 
@@ -273,20 +290,22 @@ export function compileAddForeignKeyConstraint(
   columns: string[],
   referencedTable: string,
   referencedColumns: string[],
-  options: CompileSqlOptions
+  options: CompileSqlOptions,
+  onDelete?: string,
+  onUpdate?: string
 ): string {
   const db = createCompilerDb(options.dialect);
-  return (
-    db.schema
-      .alterTable(tableName)
-      .addForeignKeyConstraint(
-        constraintName,
-        columns as any,
-        referencedTable,
-        referencedColumns as any
-      )
-      .compile().sql + ";"
-  );
+  let builder = db.schema
+    .alterTable(tableName)
+    .addForeignKeyConstraint(
+      constraintName,
+      columns as any,
+      referencedTable,
+      referencedColumns as any
+    );
+  if (onDelete) builder = builder.onDelete(onDelete as any);
+  if (onUpdate) builder = builder.onUpdate(onUpdate as any);
+  return builder.compile().sql + ";";
 }
 
 /**

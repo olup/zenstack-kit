@@ -1,5 +1,5 @@
 import type { KyselyDialect } from "../../sql/kysely-adapter.js";
-import type { SchemaSnapshot, SchemaTable, SchemaColumn, SchemaEnum } from "../../schema/snapshot.js";
+import type { SchemaSnapshot, SchemaTable, SchemaColumn, SchemaEnum, SchemaForeignKey } from "../../schema/snapshot.js";
 import {
   compileCreateTable,
   compileDropTable,
@@ -17,6 +17,7 @@ import {
   compileCreateEnum,
   compileDropEnum,
   compileAddEnumValue,
+  toKyselyReferentialAction,
 } from "../../sql/compiler.js";
 
 function diffTableChanges(previousModel: SchemaTable, currentModel: SchemaTable, tableName: string) {
@@ -44,24 +45,8 @@ function diffTableChanges(previousModel: SchemaTable, currentModel: SchemaTable,
     tableName: string;
     index: { name: string; columns: string[] };
   }> = [];
-  const addedForeignKeys: Array<{
-    tableName: string;
-    foreignKey: {
-      name: string;
-      columns: string[];
-      referencedTable: string;
-      referencedColumns: string[];
-    };
-  }> = [];
-  const removedForeignKeys: Array<{
-    tableName: string;
-    foreignKey: {
-      name: string;
-      columns: string[];
-      referencedTable: string;
-      referencedColumns: string[];
-    };
-  }> = [];
+  const addedForeignKeys: Array<{ tableName: string; foreignKey: SchemaForeignKey }> = [];
+  const removedForeignKeys: Array<{ tableName: string; foreignKey: SchemaForeignKey }> = [];
   const primaryKeyChanges: Array<{
     tableName: string;
     previous?: { name: string; columns: string[] };
@@ -133,7 +118,12 @@ function diffTableChanges(previousModel: SchemaTable, currentModel: SchemaTable,
   const currFks = new Map(currentModel.foreignKeys.map((f) => [f.name, f]));
 
   for (const [name, fk] of currFks.entries()) {
-    if (!prevFks.has(name)) {
+    const prev = prevFks.get(name);
+    if (!prev) {
+      addedForeignKeys.push({ tableName, foreignKey: fk });
+    } else if (prev.onDelete !== fk.onDelete || prev.onUpdate !== fk.onUpdate) {
+      // Cascade rule changed: drop old FK and recreate with new rules
+      removedForeignKeys.push({ tableName, foreignKey: prev });
       addedForeignKeys.push({ tableName, foreignKey: fk });
     }
   }
@@ -217,24 +207,8 @@ export function diffSchemas(previous: SchemaSnapshot | null, current: SchemaSnap
     tableName: string;
     index: { name: string; columns: string[] };
   }> = [];
-  const addedForeignKeys: Array<{
-    tableName: string;
-    foreignKey: {
-      name: string;
-      columns: string[];
-      referencedTable: string;
-      referencedColumns: string[];
-    };
-  }> = [];
-  const removedForeignKeys: Array<{
-    tableName: string;
-    foreignKey: {
-      name: string;
-      columns: string[];
-      referencedTable: string;
-      referencedColumns: string[];
-    };
-  }> = [];
+  const addedForeignKeys: Array<{ tableName: string; foreignKey: SchemaForeignKey }> = [];
+  const removedForeignKeys: Array<{ tableName: string; foreignKey: SchemaForeignKey }> = [];
   const primaryKeyChanges: Array<{
     tableName: string;
     previous?: { name: string; columns: string[] };
@@ -649,7 +623,9 @@ export function buildSqlStatements(
         foreignKey.columns,
         foreignKey.referencedTable,
         foreignKey.referencedColumns,
-        compileOpts
+        compileOpts,
+        foreignKey.onDelete ? toKyselyReferentialAction(foreignKey.onDelete) : undefined,
+        foreignKey.onUpdate ? toKyselyReferentialAction(foreignKey.onUpdate) : undefined
       )
     );
   }
@@ -811,7 +787,9 @@ export function buildSqlStatements(
         foreignKey.columns,
         foreignKey.referencedTable,
         foreignKey.referencedColumns,
-        compileOpts
+        compileOpts,
+        foreignKey.onDelete ? toKyselyReferentialAction(foreignKey.onDelete) : undefined,
+        foreignKey.onUpdate ? toKyselyReferentialAction(foreignKey.onUpdate) : undefined
       )
     );
     down.unshift(compileDropConstraint(tableName, foreignKey.name, compileOpts));
