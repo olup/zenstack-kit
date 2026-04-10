@@ -64,6 +64,16 @@ interface PrismaMigrationsRow {
 }
 
 /**
+ * Strip version prefix from checksum for storage in the DB table.
+ * The DB checksum column is VARCHAR(64) (Prisma-compatible), so we store only the raw 64-char hex.
+ * The version prefix (e.g. "v2:") is preserved in the migration log file as the source of truth.
+ */
+function checksumForDb(checksum: string): string {
+  const colonIndex = checksum.indexOf(":");
+  return colonIndex !== -1 ? checksum.slice(colonIndex + 1) : checksum;
+}
+
+/**
  * Ensure _prisma_migrations table exists
  */
 async function ensureMigrationsTable(
@@ -91,7 +101,7 @@ async function ensureMigrationsTable(
     await sql`
       CREATE TABLE IF NOT EXISTS ${sql.raw(`"${schema}"."${tableName}"`)} (
         id VARCHAR(36) PRIMARY KEY,
-        checksum VARCHAR(128) NOT NULL,
+        checksum VARCHAR(64) NOT NULL,
         finished_at TIMESTAMPTZ,
         migration_name VARCHAR(255) NOT NULL,
         logs TEXT,
@@ -104,7 +114,7 @@ async function ensureMigrationsTable(
     await sql`
       CREATE TABLE IF NOT EXISTS ${sql.raw(`\`${tableName}\``)} (
         id VARCHAR(36) PRIMARY KEY,
-        checksum VARCHAR(128) NOT NULL,
+        checksum VARCHAR(64) NOT NULL,
         finished_at DATETIME,
         migration_name VARCHAR(255) NOT NULL,
         logs TEXT,
@@ -158,21 +168,22 @@ async function recordMigration(
   checksum: string
 ): Promise<void> {
   const id = crypto.randomUUID();
+  const dbChecksum = checksumForDb(checksum);
 
   if (dialect === "postgres" && schema) {
     await sql`
       INSERT INTO ${sql.raw(`"${schema}"."${tableName}"`)} (id, checksum, migration_name, finished_at, applied_steps_count)
-      VALUES (${id}, ${checksum}, ${migrationName}, now(), 1)
+      VALUES (${id}, ${dbChecksum}, ${migrationName}, now(), 1)
     `.execute(db);
   } else if (dialect === "sqlite") {
     await sql`
       INSERT INTO ${sql.raw(`"${tableName}"`)} (id, checksum, migration_name, finished_at, applied_steps_count)
-      VALUES (${id}, ${checksum}, ${migrationName}, datetime('now'), 1)
+      VALUES (${id}, ${dbChecksum}, ${migrationName}, datetime('now'), 1)
     `.execute(db);
   } else {
     await sql`
       INSERT INTO ${sql.raw(`\`${tableName}\``)} (id, checksum, migration_name, finished_at, applied_steps_count)
-      VALUES (${id}, ${checksum}, ${migrationName}, NOW(), 1)
+      VALUES (${id}, ${dbChecksum}, ${migrationName}, NOW(), 1)
     `.execute(db);
   }
 }
@@ -248,8 +259,9 @@ function validateMigrationCoherence(
       lastAppliedIndex = i;
 
       // Check 3: Checksum validation for applied migrations
+      // DB stores raw hex (no version prefix); log may have a version prefix — strip it before comparing.
       const dbRow = appliedMigrations.get(logEntry.name)!;
-      if (dbRow.checksum !== logEntry.checksum) {
+      if (dbRow.checksum !== checksumForDb(logEntry.checksum)) {
         errors.push({
           type: "checksum_mismatch",
           migrationName: logEntry.name,
