@@ -13,6 +13,7 @@ import Database from "better-sqlite3";
 import {
   runMigrateGenerate,
   runMigrateApply,
+  runMigrateRehash,
   runInit,
   runPull,
   CommandError,
@@ -20,6 +21,7 @@ import {
   type LogFn,
 } from "../src/cli/commands.js";
 import { runCli } from "../src/cli/app.js";
+import { readMigrationLog, writeMigrationLog, calculateChecksum } from "../src/migrations/prisma/log.js";
 
 interface BaseMigrationOptions {
   migrationsFolder?: string;
@@ -611,6 +613,90 @@ model User {
         process.argv = originalArgv;
         process.chdir(originalCwd);
         process.exitCode = originalExitCode;
+        await fs.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("migrate:rehash", () => {
+    it("should not reorder migrations that are already in the log", async () => {
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "zenstack-kit-rehash-"));
+
+      try {
+        const schemaPath = path.join(tempDir, "schema.zmodel");
+        const configPath = path.join(tempDir, "zenstack-kit.config.mjs");
+        const migrationsPath = path.join(tempDir, "migrations");
+
+        await fs.writeFile(schemaPath, `datasource db { provider = "sqlite"\n url = "file:./test.db"\n}\nmodel User { id Int @id }`, "utf-8");
+        await fs.writeFile(configPath, createConfigFile("./schema.zmodel", { migrationsFolder: "./migrations" }), "utf-8");
+
+        // Create two migration folders with names that would sort differently from insertion order.
+        // migration B has an earlier timestamp name but was added to the log AFTER migration A —
+        // simulating a branch merged out of order.
+        const migrationA = "20260201000000_migration_a";
+        const migrationB = "20260101000000_migration_b"; // earlier timestamp, would sort first alphabetically
+
+        await fs.mkdir(path.join(migrationsPath, migrationA), { recursive: true });
+        await fs.mkdir(path.join(migrationsPath, migrationB), { recursive: true });
+        await fs.writeFile(path.join(migrationsPath, migrationA, "migration.sql"), "CREATE TABLE a (id INTEGER);", "utf-8");
+        await fs.writeFile(path.join(migrationsPath, migrationB, "migration.sql"), "CREATE TABLE b (id INTEGER);", "utf-8");
+
+        // Log has A first, then B — even though B sorts earlier alphabetically.
+        const sqlA = "CREATE TABLE a (id INTEGER);";
+        const sqlB = "CREATE TABLE b (id INTEGER);";
+        await writeMigrationLog(migrationsPath, [
+          { name: migrationA, checksum: calculateChecksum(sqlA) },
+          { name: migrationB, checksum: calculateChecksum(sqlB) },
+        ]);
+
+        const { ctx } = createTestContext(tempDir);
+        await runMigrateRehash(ctx);
+
+        const result = await readMigrationLog(migrationsPath);
+        expect(result[0].name).toBe(migrationA); // A stays first
+        expect(result[1].name).toBe(migrationB); // B stays second
+      } finally {
+        await fs.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("should append new migrations at the end without reordering existing entries", async () => {
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "zenstack-kit-rehash-"));
+
+      try {
+        const schemaPath = path.join(tempDir, "schema.zmodel");
+        const configPath = path.join(tempDir, "zenstack-kit.config.mjs");
+        const migrationsPath = path.join(tempDir, "migrations");
+
+        await fs.writeFile(schemaPath, `datasource db { provider = "sqlite"\n url = "file:./test.db"\n}\nmodel User { id Int @id }`, "utf-8");
+        await fs.writeFile(configPath, createConfigFile("./schema.zmodel", { migrationsFolder: "./migrations" }), "utf-8");
+
+        const migrationA = "20260201000000_migration_a";
+        const migrationB = "20260101000000_migration_b"; // sorts before A but is new
+        const migrationC = "20260301000000_migration_c"; // sorts after A, also new
+
+        await fs.mkdir(path.join(migrationsPath, migrationA), { recursive: true });
+        await fs.mkdir(path.join(migrationsPath, migrationB), { recursive: true });
+        await fs.mkdir(path.join(migrationsPath, migrationC), { recursive: true });
+        await fs.writeFile(path.join(migrationsPath, migrationA, "migration.sql"), "CREATE TABLE a (id INTEGER);", "utf-8");
+        await fs.writeFile(path.join(migrationsPath, migrationB, "migration.sql"), "CREATE TABLE b (id INTEGER);", "utf-8");
+        await fs.writeFile(path.join(migrationsPath, migrationC, "migration.sql"), "CREATE TABLE c (id INTEGER);", "utf-8");
+
+        // Only A is in the log initially
+        await writeMigrationLog(migrationsPath, [
+          { name: migrationA, checksum: calculateChecksum("CREATE TABLE a (id INTEGER);") },
+        ]);
+
+        const { ctx } = createTestContext(tempDir);
+        await runMigrateRehash(ctx);
+
+        const result = await readMigrationLog(migrationsPath);
+        expect(result).toHaveLength(3);
+        expect(result[0].name).toBe(migrationA); // existing entry stays first
+        // new entries appended in alphabetical order
+        expect(result[1].name).toBe(migrationB);
+        expect(result[2].name).toBe(migrationC);
+      } finally {
         await fs.rm(tempDir, { recursive: true, force: true });
       }
     });

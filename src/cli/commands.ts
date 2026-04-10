@@ -414,11 +414,24 @@ export async function runMigrateRehash(ctx: CommandContext): Promise<void> {
 
   const existingLog = await readMigrationLog(outputPath);
   const existingByName = new Map(existingLog.map((e) => [e.name, e]));
-  const migrations = await scanMigrationFolders(outputPath, existingByName);
-  if (migrations.length === 0) {
+  const scanned = await scanMigrationFolders(outputPath, existingByName);
+  if (scanned.length === 0) {
     ctx.log("warning", "No migrations found.");
     return;
   }
+
+  const scannedByName = new Map(scanned.map((e) => [e.name, e]));
+
+  // Preserve existing log order — only update checksums in-place.
+  // Never reorder: the log order reflects apply history and must not be changed by tooling.
+  const updated = existingLog
+    .filter((e) => scannedByName.has(e.name)) // drop entries whose folder was deleted
+    .map((e) => scannedByName.get(e.name)!);  // updated checksum, same position
+
+  // Append migrations that are on disk but not yet in the log, sorted by name.
+  const existingNames = new Set(existingLog.map((e) => e.name));
+  const newEntries = scanned.filter((e) => !existingNames.has(e.name));
+  const migrations = [...updated, ...newEntries];
 
   await writeMigrationLog(outputPath, migrations);
 
