@@ -259,9 +259,10 @@ function validateMigrationCoherence(
       lastAppliedIndex = i;
 
       // Check 3: Checksum validation for applied migrations
-      // DB stores raw hex (no version prefix); log may have a version prefix — strip it before comparing.
+      // Strip version prefix from both sides: new DB rows have bare hex, but old rows (written by
+      // Prisma, older versions of this tool, or direct inserts in tests) may still have "v2:".
       const dbRow = appliedMigrations.get(logEntry.name)!;
-      if (dbRow.checksum !== checksumForDb(logEntry.checksum)) {
+      if (checksumForDb(dbRow.checksum) !== checksumForDb(logEntry.checksum)) {
         errors.push({
           type: "checksum_mismatch",
           migrationName: logEntry.name,

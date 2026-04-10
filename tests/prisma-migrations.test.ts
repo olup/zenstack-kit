@@ -1305,7 +1305,7 @@ describe("Prisma migrations - migrations table configuration", () => {
     expect(records.length).toBe(1);
     expect(records[0].migration_name).toBe(migration!.folderName);
     expect(records[0].checksum).toBeDefined();
-    expect(records[0].checksum).toMatch(/^v2:[0-9a-f]{64}$/); // v2 format
+    expect(records[0].checksum).toMatch(/^[0-9a-f]{64}$/); // raw hex, v2 prefix stored in log only
     expect(records[0].finished_at).toBeDefined();
     expect(records[0].applied_steps_count).toBe(1);
     expect(records[0].rolled_back_at).toBeNull();
